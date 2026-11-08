@@ -1,0 +1,12 @@
+[project]
+name = "hermes-corkboard"
+version = "0.1.0"
+description = "Hermes Agent plugin: one place for owner-only work with auto-clearing checks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
