@@ -47,3 +47,45 @@ test('timeAgo formats each bucket with correct singular/plural', () => {
   assert.equal(ago(365 * 86400), '1 year ago')
   assert.equal(ago(730 * 86400), '2 years ago')
 })
+
+test('closeTarget returns session when an active id is present', () => {
+  assert.deepEqual(plugin.closeTarget('sess-1'), { kind: 'session', id: 'sess-1' })
+})
+
+test('closeTarget returns new when there is no active id', () => {
+  assert.deepEqual(plugin.closeTarget(null), { kind: 'new' })
+  assert.deepEqual(plugin.closeTarget(''), { kind: 'new' })
+  assert.deepEqual(plugin.closeTarget(undefined), { kind: 'new' })
+})
+
+const MIXED = [
+  { id: 'a', status: 'open', created_at: 100 },
+  { id: 'b', status: 'done', created_at: 200 },
+  { id: 'c', status: 'dismissed', created_at: 300 },
+]
+
+test('filterPins filters each status and keeps everything for all', () => {
+  assert.deepEqual(plugin.filterPins(MIXED, 'open').map((p) => p.id), ['a'])
+  assert.deepEqual(plugin.filterPins(MIXED, 'done').map((p) => p.id), ['b'])
+  assert.deepEqual(plugin.filterPins(MIXED, 'dismissed').map((p) => p.id), ['c'])
+  assert.deepEqual(plugin.filterPins(MIXED, 'all').map((p) => p.id), ['a', 'b', 'c'])
+})
+
+test('filterPins filters a mixed backend response down to dismissed', () => {
+  assert.deepEqual(plugin.filterPins(MIXED, 'dismissed'), [{ id: 'c', status: 'dismissed', created_at: 300 }])
+})
+
+test('sortPins sorts newest and oldest by created_at', () => {
+  assert.deepEqual(plugin.sortPins(MIXED, 'newest').map((p) => p.id), ['c', 'b', 'a'])
+  assert.deepEqual(plugin.sortPins(MIXED, 'oldest').map((p) => p.id), ['a', 'b', 'c'])
+})
+
+test('sortPins breaks created_at ties by id and does not mutate input', () => {
+  const input = [
+    { id: 'z', status: 'open', created_at: 100 },
+    { id: 'm', status: 'open', created_at: 100 },
+  ]
+  const sorted = plugin.sortPins(input, 'newest')
+  assert.deepEqual(sorted.map((p) => p.id), ['m', 'z'])
+  assert.deepEqual(input.map((p) => p.id), ['z', 'm'])
+})

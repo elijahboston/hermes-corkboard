@@ -54,6 +54,35 @@ export function timeAgo(seconds, now = Date.now() / 1000) {
   return years === 1 ? '1 year ago' : `${years} years ago`
 }
 
+// Decide where closing the corkboard page should land: back into the active
+// session, or a fresh chat when there is no active session.
+export function closeTarget(activeSessionId) {
+  return activeSessionId ? { kind: 'session', id: activeSessionId } : { kind: 'new' }
+}
+
+// Client-side defence in depth: a backend that ignores `?status=`/`?sort=` still
+// yields the right list because we filter and sort here. `all` keeps everything.
+export function filterPins(pins, status) {
+  const list = Array.isArray(pins) ? pins : []
+  if (status === 'all' || status == null) return list
+  return list.filter((pin) => pin.status === status)
+}
+
+// Newest = newest created_at first; oldest = oldest first. Stable, id as tie-break.
+export function sortPins(pins, sort) {
+  const list = Array.isArray(pins) ? pins.slice() : []
+  const dir = sort === 'oldest' ? 1 : -1
+  return list.sort((a, b) => {
+    const diff = (a.created_at ?? 0) - (b.created_at ?? 0)
+    if (diff !== 0) return diff * dir
+    const aId = String(a.id ?? '')
+    const bId = String(b.id ?? '')
+    if (aId < bId) return -1
+    if (aId > bId) return 1
+    return 0
+  })
+}
+
 function btn(primary) {
   return primary
     ? 'rounded px-2 py-1 text-xs font-medium bg-(--ui-accent) text-(--ui-accent-fg)'
@@ -77,10 +106,11 @@ function usePins(ctx, status = 'open', sort = 'newest') {
 
   const reload = useCallback(async () => {
     try {
-      const path = `/pins?status=${encodeURIComponent(status)}&sort=${encodeURIComponent(sort)}`
-      const data = await ctx.rest(path)
+      // Request the unfiltered list, then filter/sort client-side so the panel
+      // stays correct even against a backend that ignores the query params.
+      const data = await ctx.rest('/pins?status=&sort=')
       const list = Array.isArray(data) ? data : (data && data.pins) || []
-      setPins(list)
+      setPins(sortPins(filterPins(list, status), sort))
     } catch (_err) {
       setPins([])
     } finally {
@@ -264,6 +294,7 @@ function FilterBar({ status, onStatus, sort, onSort }) {
   const tabs = STATUSES.map(([value, label]) =>
     jsx('button', {
       type: 'button', key: value, onClick: () => onStatus(value),
+      'aria-pressed': status === value,
       className: status === value
         ? 'rounded px-2 py-0.5 text-[0.6875rem] font-medium bg-(--ui-accent) text-(--ui-accent-fg)'
         : 'rounded px-2 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--ui-surface)',
@@ -307,7 +338,7 @@ function OpenBesideButton({ ctx }) {
   if (typeof host.openWorkspace !== 'function') return null
   return jsx('button', {
     type: 'button',
-    className: btn(false) + ' ml-auto',
+    className: btn(false),
     onClick: () => {
       haptic('tap')
       host.openWorkspace('corkboard', {
@@ -320,8 +351,42 @@ function OpenBesideButton({ ctx }) {
     children: 'Open beside chat',
   })
 }
+function closeCorkboardPage() {
+  haptic('tap')
+  let activeId = null
+  const atom = host.state && host.state.activeSessionId
+  if (atom && typeof atom.get === 'function') activeId = atom.get()
+  const target = closeTarget(activeId)
+  if (target.kind === 'session' && typeof host.openSession === 'function') {
+    host.openSession(target.id)
+  } else {
+    host.navigate('/')
+  }
+}
 
-function Board({ ctx, headerControls = null }) {
+function ClosePageButton({ onClose }) {
+  return jsx('button', {
+    type: 'button',
+    'aria-label': 'Close corkboard',
+    title: 'Close',
+    onClick: onClose,
+    className: 'rounded px-1.5 text-base leading-none text-(--ui-text-tertiary) hover:text-(--ui-text)',
+    children: '×',
+  })
+}
+
+function Board({ ctx, headerControls = null, onClose = null }) {
+  useEffect(() => {
+    if (typeof onClose !== 'function') return undefined
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return
+      const t = e.target
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      onClose()
+    }
+    return ctx.addEventListener(window, 'keydown', onKey)
+  }, [ctx, onClose])
+
   return jsxs('div', { className: 'flex h-full flex-col overflow-y-auto', children: [
     jsxs('div', { className: 'flex items-center gap-2 px-3 pt-3', children: [
       jsx('div', { className: 'text-sm font-medium', children: 'Corkboard' }),
@@ -354,7 +419,14 @@ export default {
         id: 'page',
         area: ROUTES_AREA,
         data: { path: '/corkboard' },
-        render: () => jsx(Board, { ctx, headerControls: jsx(OpenBesideButton, { ctx }) }),
+        render: () => jsx(Board, {
+          ctx,
+          onClose: closeCorkboardPage,
+          headerControls: jsxs('div', { className: 'ml-auto flex items-center gap-2', children: [
+            jsx(OpenBesideButton, { ctx }),
+            jsx(ClosePageButton, { onClose: closeCorkboardPage }),
+          ] }),
+        }),
       },
       {
         id: 'nav',

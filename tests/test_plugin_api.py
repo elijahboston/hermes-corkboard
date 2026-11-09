@@ -74,3 +74,40 @@ def test_answer_secret_rejected_400(store):
     row = store.pin("q", kind="text", question="which?")
     r = _client().post(f"/pins/{row['id']}/answer", json={"answer": "sk-" + "A" * 20})
     assert r.status_code == 400
+
+
+def _set_created(store, pin, ts):
+    store.conn.execute("UPDATE pins SET created_at = ? WHERE id = ?", (ts, pin["id"]))
+    store.conn.commit()
+
+
+def test_list_pins_filters_and_sorts(store):
+    open_pin = store.pin("open")
+    done_pin = store.pin("done")
+    dismissed_pin = store.pin("dismissed")
+    store.mark(done_pin["id"], "done")
+    store.mark(dismissed_pin["id"], "dismissed")
+    _set_created(store, open_pin, 300)
+    _set_created(store, done_pin, 200)
+    _set_created(store, dismissed_pin, 100)
+
+    client = _client()
+
+    r = client.get("/pins", params={"status": "dismissed"})
+    assert r.status_code == 200
+    assert [p["id"] for p in r.json()] == [dismissed_pin["id"]]
+
+    r = client.get("/pins", params={"status": "all"})
+    assert r.status_code == 200
+    assert [p["id"] for p in r.json()] == [open_pin["id"], done_pin["id"], dismissed_pin["id"]]
+
+    r = client.get("/pins")
+    assert r.status_code == 200
+    assert [p["id"] for p in r.json()] == [open_pin["id"]]
+
+    r = client.get("/pins", params={"status": "all", "sort": "oldest"})
+    assert r.status_code == 200
+    assert [p["id"] for p in r.json()] == [dismissed_pin["id"], done_pin["id"], open_pin["id"]]
+
+    assert client.get("/pins", params={"status": "bogus"}).status_code == 400
+    assert client.get("/pins", params={"sort": "bogus"}).status_code == 400

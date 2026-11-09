@@ -272,8 +272,8 @@ class Store:
         self.conn.commit()
 
 def normalize_status(status: Optional[str]) -> Optional[str]:
-    """Validate a status filter; ``all``/``None`` mean no filter."""
-    if status is None or status == "all":
+    """Validate a status filter; ``all``/``None``/``""`` mean no filter."""
+    if status is None or status in ("", "all"):
         return None
     if status not in _STATUSES:
         raise ValueError(f"unknown status {status!r} (choose open, done, dismissed, all)")
@@ -281,9 +281,9 @@ def normalize_status(status: Optional[str]) -> Optional[str]:
 
 
 def normalize_sort(sort: str) -> str:
-    if sort not in ("newest", "oldest"):
-        raise ValueError(f"unknown sort {sort!r} (choose newest, oldest)")
-    return sort
+    if sort in ("", "newest", "oldest"):
+        return sort if sort != "" else "newest"
+    raise ValueError(f"unknown sort {sort!r} (choose newest, oldest)")
 
 
 def maybe_purge(store: "Store", retention_days: int, *, force: bool = False, now: Optional[int] = None) -> int:
