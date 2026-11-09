@@ -279,3 +279,15 @@ test('originName uses origin_profile for kanban and null otherwise', () => {
   assert.equal(plugin.originName({ origin_kind: 'kanban', origin_profile: 'worker', source: 'kanban:core/t_1' }, profiles), 'worker')
   assert.equal(plugin.originName({ origin_kind: 'kanban', source: 'kanban:core/t_1' }, profiles), null)
 })
+
+test('foldOutcome: no runAction/visibility support means the button is unavailable', () => {
+  assert.equal(plugin.foldOutcome(false, null), 'unavailable')
+})
+
+test('foldOutcome: pane hidden after the toggle means it folded', () => {
+  assert.equal(plugin.foldOutcome(true, false), 'folded')
+})
+
+test('foldOutcome: pane still visible means the toggle hit another column, so undo it', () => {
+  assert.equal(plugin.foldOutcome(true, true), 'undo')
+})

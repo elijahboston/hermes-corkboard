@@ -759,7 +759,7 @@ function Board({ ctx, headerControls = null, onClose = null, compact = false }) 
   }, [ctx, onClose])
 
   const header = compact
-    ? null
+    ? jsx('div', { className: 'flex items-center justify-end px-2 pt-1.5', children: jsx(FoldPaneButton, { ctx }) })
     : jsxs('div', { className: 'flex items-center gap-2 px-3 pt-3', children: [
         jsx('div', { className: 'text-sm font-medium', children: 'Corkboard' }),
         headerControls,
@@ -771,10 +771,50 @@ function Board({ ctx, headerControls = null, onClose = null, compact = false }) 
   ].filter(Boolean) })
 }
 
+const SIDE_PANE_ID = 'corkboard:side'
+const FOLD_ACTION = 'view.toggleRightSidebar'
+
+// The SDK has no "minimize this pane" call. The app's right-side toggle (⌘J)
+// folds the outermost column right of the chat, which is where the side pane
+// docks. If the pane was dragged elsewhere the toggle hits another column, so
+// a fold that leaves the pane visible is undone and reported as unavailable.
+export function foldOutcome(canFold, visibleAfter) {
+  if (!canFold) return 'unavailable'
+  return visibleAfter ? 'undo' : 'folded'
+}
+
+function paneVisibleNow() {
+  if (typeof host?.paneVisibility !== 'function') return null
+  return host.paneVisibility(SIDE_PANE_ID).get()
+}
+
+function FoldPaneButton({ ctx }) {
+  const [hint, setHint] = useState(false)
+  const canFold = typeof ctx?.runAction === 'function' && typeof host?.paneVisibility === 'function'
+  if (!canFold) return null
+  const fold = () => {
+    haptic('tap')
+    const first = ctx.runAction(FOLD_ACTION)
+    const outcome = foldOutcome(Boolean(first?.ok), paneVisibleNow())
+    if (outcome === 'undo') {
+      ctx.runAction(FOLD_ACTION)
+      setHint(true)
+    }
+  }
+  return jsx('button', {
+    type: 'button',
+    'aria-label': 'Collapse corkboard',
+    title: hint ? 'Can\u2019t collapse here \u2014 use the chevron on the pane\u2019s tab' : 'Collapse (expand from the edge tab or the 📌 count)',
+    className: 'grid size-6 place-items-center rounded-md text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+    onClick: fold,
+    children: jsx('i', { 'aria-hidden': 'true', className: 'codicon codicon-layout-sidebar-right-off', style: { fontSize: '0.875rem' } }),
+  })
+}
+
 function revealSidePane() {
   haptic('tap')
   if (typeof host?.revealPane === 'function') {
-    host.revealPane('corkboard:side')
+    host.revealPane(SIDE_PANE_ID)
   } else {
     host.navigate('/corkboard')
   }
