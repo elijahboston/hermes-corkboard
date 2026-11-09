@@ -48,6 +48,68 @@ test('timeAgo formats each bucket with correct singular/plural', () => {
   assert.equal(ago(730 * 86400), '2 years ago')
 })
 
+test('metaLine gives an open pin only a Pinned segment', () => {
+  const segments = plugin.metaLine({ status: 'open', created_at: NOW - 3 * 3600 }, NOW)
+  assert.equal(segments.length, 1)
+  assert.deepEqual({ label: segments[0].label, ago: segments[0].ago }, { label: 'Pinned', ago: '3 hours ago' })
+  assert.ok(segments[0].iso.length > 0)
+})
+
+test('metaLine labels a done pin Pinned · Acknowledged', () => {
+  const segments = plugin.metaLine({ status: 'done', created_at: NOW - 7 * 3600, closed_at: NOW - 120 }, NOW)
+  assert.deepEqual(segments.map(s => s.label), ['Pinned', 'Acknowledged'])
+  assert.equal(segments[0].ago, '7 hours ago')
+  assert.equal(segments[1].ago, '2 minutes ago')
+  assert.ok(segments.every(s => s.iso.length > 0))
+})
+
+test('metaLine labels a dismissed pin Pinned · Dismissed', () => {
+  const segments = plugin.metaLine({ status: 'dismissed', created_at: NOW - 86400, closed_at: NOW - 60 }, NOW)
+  assert.deepEqual(segments.map(s => s.label), ['Pinned', 'Dismissed'])
+  assert.equal(segments[1].ago, '1 minute ago')
+})
+
+test('metaLine falls back to done_at and answered_at for the closed time', () => {
+  const done = plugin.metaLine({ status: 'done', created_at: NOW - 3600, done_at: NOW - 60 }, NOW)
+  assert.equal(done[1].ago, '1 minute ago')
+  const answered = plugin.metaLine({ status: 'done', created_at: NOW - 3600, answered_at: NOW - 30 }, NOW)
+  assert.equal(answered[1].ago, '30 seconds ago')
+})
+
+test('metaLine capitalises a yes/no answer', () => {
+  const yes = plugin.metaLine({ status: 'done', kind: 'yes_no', created_at: NOW - 3600, closed_at: NOW - 60, answer: 'yes' }, NOW)
+  const yesSeg = yes.find(s => s.label === 'Answered')
+  assert.equal(yesSeg.ago, 'Yes')
+  assert.equal(yesSeg.iso, null)
+
+  const no = plugin.metaLine({ status: 'done', kind: 'yes_no', created_at: NOW - 3600, closed_at: NOW - 60, answer: 'no' }, NOW)
+  assert.equal(no.find(s => s.label === 'Answered').ago, 'No')
+})
+
+test('metaLine keeps a choice answer verbatim', () => {
+  const segments = plugin.metaLine({ status: 'done', kind: 'choice', created_at: NOW - 3600, closed_at: NOW - 60, answer: 'Ship it' }, NOW)
+  assert.equal(segments.find(s => s.label === 'Answered').ago, 'Ship it')
+})
+
+test('metaLine truncates a long text answer and keeps the full value as a tooltip', () => {
+  const full = 'x'.repeat(100)
+  const segments = plugin.metaLine({ status: 'done', kind: 'text', created_at: NOW - 3600, closed_at: NOW - 60, answer: full }, NOW)
+  const answered = segments.find(s => s.label === 'Answered')
+  assert.equal(answered.ago, 'x'.repeat(60) + '…')
+  assert.equal(answered.iso, full)
+})
+
+test('metaLine leaves a short text answer untruncated with no tooltip', () => {
+  const segments = plugin.metaLine({ status: 'done', kind: 'text', created_at: NOW - 3600, closed_at: NOW - 60, answer: 'call the bank' }, NOW)
+  const answered = segments.find(s => s.label === 'Answered')
+  assert.equal(answered.ago, 'call the bank')
+  assert.equal(answered.iso, null)
+})
+
+test('metaLine returns an empty list for a null pin', () => {
+  assert.deepEqual(plugin.metaLine(null, NOW), [])
+})
+
 test('closeTarget returns session when an active id is present', () => {
   assert.deepEqual(plugin.closeTarget('sess-1'), { kind: 'session', id: 'sess-1' })
 })

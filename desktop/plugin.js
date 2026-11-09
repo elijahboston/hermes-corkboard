@@ -1,5 +1,6 @@
-// Corkboard desktop half: one home — a full page + sidebar nav — plus an "open beside
-// chat" workspace tab and a status-bar open-count badge. Data comes from the plugin's
+// Corkboard desktop half: one home — a full page + sidebar nav — plus a
+// foldable right-edge `side` pane that sits beside the chat, bot chat, or
+// sessions, and a status-bar open-count badge. Data comes from the plugin's
 // own backend via ctx.rest('/pins'), and it refetches on the
 // `plugin.corkboard.pins.changed` gateway event. No JSX (disk plugin), never
 // auto-focuses or navigates on events.
@@ -68,6 +69,56 @@ export function timeAgo(seconds, now = Date.now() / 1000) {
   if (months < 12) return months === 1 ? '1 month ago' : `${months} months ago`
   const years = Math.floor(days / 365)
   return years === 1 ? '1 year ago' : `${years} years ago`
+}
+
+const ANSWER_TRUNCATE = 60
+
+// Absolute local time for an epoch-seconds timestamp ('' when absent/invalid).
+function isoTime(seconds) {
+  const s = Number(seconds)
+  return Number.isFinite(s) && s > 0 ? new Date(s * 1000).toLocaleString() : ''
+}
+
+// Yes/no answers are capitalised; every other answer passes through verbatim.
+function answerValue(pin) {
+  const answer = String(pin?.answer ?? '').trim()
+  if (!answer) return null
+  if (pin?.kind === 'yes_no') {
+    const lower = answer.toLowerCase()
+    if (lower === 'yes') return 'Yes'
+    if (lower === 'no') return 'No'
+  }
+  return answer
+}
+
+// The single card meta line as `{label, ago, iso}` segments: `Pinned` always;
+// then `Acknowledged`/`Dismissed` when closed; then `Answered` when answered.
+// `iso` is the hover tooltip — the absolute local time for time segments, or
+// the full untruncated text for a truncated text answer (else null).
+export function metaLine(pin, now = Date.now() / 1000) {
+  if (!pin) return []
+  const segments = [{ label: 'Pinned', ago: timeAgo(pin.created_at, now), iso: isoTime(pin.created_at) }]
+
+  if (pin.status === 'done' || pin.status === 'dismissed') {
+    const closed = pin.closed_at || pin.done_at || pin.answered_at
+    segments.push({
+      label: pin.status === 'done' ? 'Acknowledged' : 'Dismissed',
+      ago: timeAgo(closed, now),
+      iso: isoTime(closed),
+    })
+  }
+
+  const value = answerValue(pin)
+  if (value !== null) {
+    const truncated = pin.kind === 'text' && value.length > ANSWER_TRUNCATE
+    segments.push({
+      label: 'Answered',
+      ago: truncated ? `${value.slice(0, ANSWER_TRUNCATE)}…` : value,
+      iso: truncated ? value : null,
+    })
+  }
+
+  return segments
 }
 
 // Decide where closing the corkboard page should land: back into the active
@@ -586,24 +637,19 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
     ? jsxs('div', { className: 'flex flex-col gap-0.5', children: [question, unblocks].filter(Boolean) })
     : null
 
-  let closed = null
-  if (!isOpen) {
-    const closedAt = pin.answered_at || pin.closed_at || pin.done_at
-    if (pin.answer) {
-      closed = jsxs('div', { className: 'flex flex-col gap-0.5', children: [
-        jsx('div', { className: 'text-xs text-(--ui-text-secondary)', children: `answer: ${pin.answer}` }),
-        closedAt ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: timeAgo(closedAt, now) }) : null,
-      ] })
-    } else if (closedAt) {
-      const label = pin.status === 'done' ? 'done' : 'dismissed'
-      closed = jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `${label} ${timeAgo(closedAt, now)}` })
-    }
-  }
-
-  const age = jsx('div', {
-    className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
-    title: pin.created_at ? new Date(pin.created_at * 1000).toLocaleString() : undefined,
-    children: timeAgo(pin.created_at, now),
+  const stamps = metaLine(pin, now)
+  const ageLine = jsx('div', {
+    className: 'flex flex-wrap items-center gap-x-1 text-[0.6875rem] text-(--ui-text-tertiary)',
+    children: stamps.map((seg, i) => jsxs('span', {
+      key: i,
+      children: [
+        i > 0 ? jsx('span', { children: ' · ' }) : null,
+        jsx('span', {
+          title: seg.iso || undefined,
+          children: seg.label === 'Answered' ? `Answered: ${seg.ago}` : (seg.ago ? `${seg.label} ${seg.ago}` : seg.label),
+        }),
+      ],
+    })),
   })
 
   const actions = isOpen
@@ -623,8 +669,7 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
       origin,
       where,
       meta,
-      closed,
-      age,
+      ageLine,
       actions,
     ].filter(Boolean),
   })
@@ -677,24 +722,6 @@ function PinList({ ctx }) {
   ] })
 }
 
-function OpenBesideButton({ ctx }) {
-  if (typeof host.openWorkspace !== 'function') return null
-  return jsx('button', {
-    type: 'button',
-    className: btn(false),
-    onClick: () => {
-      haptic('tap')
-      host.openWorkspace('corkboard', {
-        title: 'Corkboard',
-        minWidth: 320,
-        render: () => jsx(Board, { ctx }),
-        onClose: () => {},
-      })
-    },
-    children: 'Open beside chat',
-  })
-}
-
 function closeCorkboardPage() {
   haptic('tap')
   let activeId = null
@@ -719,7 +746,7 @@ function ClosePageButton({ onClose }) {
   })
 }
 
-function Board({ ctx, headerControls = null, onClose = null }) {
+function Board({ ctx, headerControls = null, onClose = null, compact = false }) {
   useEffect(() => {
     if (typeof onClose !== 'function') return undefined
     const onKey = (e) => {
@@ -731,13 +758,32 @@ function Board({ ctx, headerControls = null, onClose = null }) {
     return ctx.addEventListener(window, 'keydown', onKey)
   }, [ctx, onClose])
 
+  const header = compact
+    ? null
+    : jsxs('div', { className: 'flex items-center gap-2 px-3 pt-3', children: [
+        jsx('div', { className: 'text-sm font-medium', children: 'Corkboard' }),
+        headerControls,
+      ] })
+
   return jsxs('div', { className: 'flex h-full flex-col overflow-y-auto', children: [
-    jsxs('div', { className: 'flex items-center gap-2 px-3 pt-3', children: [
-      jsx('div', { className: 'text-sm font-medium', children: 'Corkboard' }),
-      headerControls,
-    ] }),
+    header,
     jsx(PinList, { ctx }),
-  ] })
+  ].filter(Boolean) })
+}
+
+function revealSidePane() {
+  haptic('tap')
+  if (typeof host?.revealPane === 'function') {
+    host.revealPane('corkboard:side')
+  } else {
+    host.navigate('/corkboard')
+  }
+}
+
+function CorkboardTabTitle({ ctx }) {
+  const { pins, loaded } = usePins(ctx, 'open', 'newest')
+  if (!loaded || pins.length === 0) return 'Corkboard'
+  return `Corkboard (${pins.length})`
 }
 
 function StatusBadge({ ctx }) {
@@ -746,10 +792,7 @@ function StatusBadge({ ctx }) {
   return jsx('button', {
     type: 'button',
     className: 'px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text)',
-    onClick: () => {
-      haptic('tap')
-      host.navigate('/corkboard')
-    },
+    onClick: revealSidePane,
     children: `📌 ${pins.length}`,
   })
 }
@@ -833,11 +876,32 @@ export default {
         render: () => jsx(Board, {
           ctx,
           onClose: closeCorkboardPage,
-          headerControls: jsxs('div', { className: 'ml-auto flex items-center gap-2', children: [
-            jsx(OpenBesideButton, { ctx }),
+          headerControls: jsx('div', { className: 'ml-auto flex items-center gap-2', children: [
             jsx(ClosePageButton, { onClose: closeCorkboardPage }),
           ] }),
         }),
+      },
+      {
+        id: 'side',
+        area: 'panes',
+        title: 'Corkboard',
+        data: {
+          tabTitle: () => jsx(CorkboardTabTitle, { ctx }),
+          tabTitleText: () => 'Corkboard',
+          placement: 'main',
+          // A one-shot adoption hint, NOT `enforce`: the owner can drag the
+          // pane elsewhere and that placement persists with the layout. The
+          // dock only steers the pane's first entry beside the chat.
+          dock: { pane: 'workspace', pos: 'right' },
+          // Start expanded (owner's order), then collapse/expand persists.
+          defaultCollapsed: false,
+          // The ✕ must never disable the plugin. `hideOnly` means the tab
+          // never grows a ✕ — fold (the header chevron) replaces Close, so
+          // the single-pane "Close disables the plugin" path is never reached.
+          hideOnly: true,
+          width: '320px',
+        },
+        render: () => jsx(Board, { ctx, compact: true }),
       },
       {
         id: 'nav',

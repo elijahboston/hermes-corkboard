@@ -5,7 +5,7 @@ themselves when a check passes.
 
 A native Hermes general plugin: one agent tool (`corkboard`), one CLI command
 (`hermes corkboard`), one slash command (`/corkboard`), kanban auto-pin hooks, and a desktop
-half (a sidebar page, an "open beside chat" workspace tab, and a status-bar badge) that
+half (a sidebar page, a foldable side pane beside any view, and a status-bar badge) that
 shares the same backend as the web dashboard.
 
 ## Install
@@ -43,11 +43,22 @@ default profile.
 
 ## Desktop
 
-One home: the **Corkboard** page, reached from the sidebar nav (`pin` icon) or by clicking the
-status-bar badge (an open-pin count, hidden while there are no open pins). The page header has an
-**Open beside chat** button that docks the same board as a closable tab in the main workspace
-zone; it appears only when the desktop build supports `host.openWorkspace`. Re-opening re-fronts
-the existing tab rather than duplicating it.
+Two surfaces share one board: the **Corkboard** page (sidebar nav, `pin` icon, with its own
+Close button) and a **side pane** docked to the right edge of the main workspace. The side pane
+sits beside a chat, a Bot Mode bot chat, or the sessions view — it never replaces them. It starts
+expanded (`defaultCollapsed: false`), 320px wide, and its tab title shows the live open-pin count
+(`Corkboard (3)`).
+
+The side pane's ✕ is never offered: `hideOnly: true` swaps Close for a fold (the header
+minimize chevron, or the zone menu's Minimize row), so no close gesture can ever disable the
+plugin. A folded pane keeps a rail tab and comes back on the next badge click.
+
+Clicking the status-bar badge (an open-pin count, hidden while there are no open pins) reveals the
+side pane through `host.revealPane('corkboard:side')`; desktops without that API fall back to
+`host.navigate('/corkboard')`. The badge never focuses or navigates on background events.
+
+The side pane's dock is a one-shot adoption hint (`dock: { pane: 'workspace', pos: 'right' }`,
+no `enforce`), so dragging it elsewhere sticks across launches.
 
 ## Origin and link back
 
