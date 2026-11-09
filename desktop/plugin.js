@@ -1,7 +1,8 @@
-// Corkboard desktop half: a docked pane, a full page + sidebar nav, and a status-bar
-// open-count badge. Data comes from the plugin's own backend via ctx.rest('/pins'),
-// and it refetches on the `plugin.corkboard.pins.changed` gateway event. No JSX (disk
-// plugin), never auto-focuses or navigates on events.
+// Corkboard desktop half: one home — a full page + sidebar nav — plus an "open beside
+// chat" workspace tab and a status-bar open-count badge. Data comes from the plugin's
+// own backend via ctx.rest('/pins'), and it refetches on the
+// `plugin.corkboard.pins.changed` gateway event. No JSX (disk plugin), never
+// auto-focuses or navigates on events.
 
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useCallback, useEffect, useState } from 'react'
@@ -302,17 +303,37 @@ function PinList({ ctx }) {
       : jsxs('div', { className: 'flex flex-col gap-2 px-3 pb-3', children: pins.map((pin) => jsx(PinRow, { ctx, pin, onChanged: reload, key: pin.id })) }),
   ] })
 }
+function OpenBesideButton({ ctx }) {
+  if (typeof host.openWorkspace !== 'function') return null
+  return jsx('button', {
+    type: 'button',
+    className: btn(false) + ' ml-auto',
+    onClick: () => {
+      haptic('tap')
+      host.openWorkspace('corkboard', {
+        title: 'Corkboard',
+        minWidth: 320,
+        render: () => jsx(Board, { ctx }),
+        onClose: () => {},
+      })
+    },
+    children: 'Open beside chat',
+  })
+}
 
-function CorkboardView({ ctx }) {
+function Board({ ctx, headerControls = null }) {
   return jsxs('div', { className: 'flex h-full flex-col overflow-y-auto', children: [
-    jsx('div', { className: 'px-3 pt-3 text-sm font-medium', children: 'Corkboard' }),
+    jsxs('div', { className: 'flex items-center gap-2 px-3 pt-3', children: [
+      jsx('div', { className: 'text-sm font-medium', children: 'Corkboard' }),
+      headerControls,
+    ] }),
     jsx(PinList, { ctx }),
   ] })
 }
 
 function StatusBadge({ ctx }) {
   const { pins, loaded } = usePins(ctx, 'open', 'newest')
-  if (!loaded) return null
+  if (!loaded || pins.length === 0) return null
   return jsx('button', {
     type: 'button',
     className: 'px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:text-(--ui-text)',
@@ -330,17 +351,10 @@ export default {
   register(ctx) {
     ctx.registerMany([
       {
-        id: 'pane',
-        area: 'panes',
-        title: 'Corkboard',
-        data: { placement: 'right', width: '300px' },
-        render: () => jsx(CorkboardView, { ctx }),
-      },
-      {
         id: 'page',
         area: ROUTES_AREA,
         data: { path: '/corkboard' },
-        render: () => jsx(CorkboardView, { ctx }),
+        render: () => jsx(Board, { ctx, headerControls: jsx(OpenBesideButton, { ctx }) }),
       },
       {
         id: 'nav',

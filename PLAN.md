@@ -96,19 +96,19 @@ hermes-corkboard/
 │   ├── manifest.json        # { "name": "corkboard", "api": "plugin_api.py" }
 │   └── plugin_api.py        # GET /api/plugins/corkboard/pins, POST …/pins/<id>/done|dismiss
 └── desktop/
-    └── plugin.js            # pane + page + sidebar nav + status-bar badge
+    └── plugin.js            # sidebar page + "open beside chat" tab + status-bar badge
 ```
 
-- **Pane** (`PANES_AREA`): the pin list, docked beside the chat, with Done / Dismiss buttons and links.
-- **Page + sidebar nav** (`ROUTES_AREA` + `SIDEBAR_NAV_AREA`): a full "Corkboard" page, reachable from the sidebar.
-- **Status-bar badge** (`STATUSBAR_AREAS.right`): open-pin count; click opens the pane.
+- **Page + sidebar nav** (`ROUTES_AREA` + `SIDEBAR_NAV_AREA`): the one home — a full "Corkboard" page, reachable from the sidebar.
+- **"Open beside chat"** (`host.openWorkspace`): docks the same board as a closable tab in the main workspace zone; feature-detected, re-call re-fronts it.
+- **Status-bar badge** (`STATUSBAR_AREAS.right`): open-pin count (hidden at zero); click navigates to the page.
 - **Live updates**: when a pin is added or cleared, `plugin_api` calls `broadcast_plugin_event("corkboard", "pins.changed", {...})`; the desktop half subscribes with `host.onEvent` and refetches.
 - **Native notification**: optional, only when a NEW pin arrives (never steals focus — Desktop AGENTS.md "offer, don't hijack").
 - **Kanban card badge** (`KANBAN_CARD_AREAS.badges`): optional "📌 owner" label on cards that have a pin.
 - The web dashboard gets the same list for free via `plugin_api.py`; a dashboard tab is optional.
 - Note: `plugin_api.py` loads only when the plugin is in `plugins.enabled` in `config.yaml` (security boundary).
 
-Add tasks 12–15: `plugin_api.py` routes + tests; `desktop/plugin.js` pane + page + nav; status-bar badge + event subscription; manual check in the desktop app.
+Add tasks 12–15: `plugin_api.py` routes + tests; `desktop/plugin.js` page + nav + workspace tab; status-bar badge + event subscription; manual check in the desktop app.
 
 **Hook note:** `on_kanban_task_updated` does NOT fire for block/unblock (it covers writes "outside claim/complete/block"), so blocked-card detection uses `on_kanban_dispatch_tick` and re-reads blocked tasks. Verify this in Task 6 before relying on it.
 

@@ -5,7 +5,8 @@ themselves when a check passes.
 
 A native Hermes general plugin: one agent tool (`corkboard`), one CLI command
 (`hermes corkboard`), one slash command (`/corkboard`), kanban auto-pin hooks, and a desktop
-half (pane + page + status-bar badge) that shares the same backend as the web dashboard.
+half (a sidebar page, an "open beside chat" workspace tab, and a status-bar badge) that
+shares the same backend as the web dashboard.
 
 ## Install
 
@@ -37,8 +38,16 @@ the reviewer — not just the default. Only enabled profiles run their hooks and
 The board is one SQLite database shared by every Hermes profile. It lives at
 `<hermes root>/plugin-data/corkboard/data.db` — that is `~/.hermes/plugin-data/corkboard/data.db`,
 next to the `profiles/` directory, never inside one. The default (pre-profile) root is resolved on
-every open, so a pin the worker creates shows up on the owner's desktop pane and the CLI in the
+every open, so a pin the worker creates shows up on the owner's desktop page and the CLI in the
 default profile.
+
+## Desktop
+
+One home: the **Corkboard** page, reached from the sidebar nav (`pin` icon) or by clicking the
+status-bar badge (an open-pin count, hidden while there are no open pins). The page header has an
+**Open beside chat** button that docks the same board as a closable tab in the main workspace
+zone; it appears only when the desktop build supports `host.openWorkspace`. Re-opening re-fronts
+the existing tab rather than duplicating it.
 
 ## CLI
 
@@ -87,7 +96,7 @@ here only; wire it up with `hermes cron` if you want it.)
 **Pin owner-only work instead of writing it in chat.** When a task is blocked on something
 only the owner can do — a credential, a decision, a phone call, a payment — call the
 `corkboard` tool with `action: "pin"` rather than leaving a message in the chat. The owner sees
-every pin in one place and can answer it from the desktop pane or the CLI.
+every pin in one place and can answer it from the desktop page or the CLI.
 
 ## Secrets rule (hard)
 
