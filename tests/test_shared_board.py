@@ -122,5 +122,26 @@ def test_agent_pin_records_profile_source(registered_ctx, store, monkeypatch):
 
 
 def test_current_profile_name_falls_back_to_hermes_home_basename(monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
     monkeypatch.setenv("HERMES_HOME", "/tmp/hermes/profiles/reviewer")
     assert store_mod.current_profile_name() == "reviewer"
+
+
+def test_current_profile_name_prefers_env_var(monkeypatch):
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "worker")
+    monkeypatch.setenv("HERMES_HOME", "/tmp/x/profiles/reviewer")
+    assert store_mod.current_profile_name() == "worker"
+
+
+def test_default_open_db_config(tmp_path):
+    path = tmp_path / "a" / "b.db"
+    conn = store_mod._default_open_db(path)
+    try:
+        assert path.parent.is_dir()
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        conn.close()

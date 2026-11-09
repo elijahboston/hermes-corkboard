@@ -339,18 +339,23 @@ def maybe_purge(store: "Store", retention_days: int, *, force: bool = False, now
 def current_profile_name() -> str:
     """Name of the profile pinning right now (``default``, ``worker``, …).
 
-    Prefers Hermes' own resolver (handles HERMES_HOME overrides and launcher-pinned
-    workers), then ``hermes_constants``, then the HERMES_HOME basename. Never raises; the
-    basename fallback keeps pins labelled in bare test installs.
+    Prefers HERMES_PROFILE_NAME / HERMES_PROFILE from the environment unless
+    ``get_hermes_home_override`` is set, then ``hermes_constants``' own profile
+    resolution, then the HERMES_HOME basename. Never raises; the basename fallback keeps
+    pins labelled in bare test installs.
     """
     try:
-        from hermes_cli.profiles import current_profile_name as _resolve
+        from hermes_constants import get_hermes_home_override
 
-        name = _resolve()
-        if name:
-            return name
+        override = get_hermes_home_override()
     except Exception:
-        pass
+        override = None
+    if override is None:
+        # No override: os.environ is this profile's; with an override it's the launch profile's.
+        for var in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+            name = os.environ.get(var, "").strip()
+            if name:
+                return name
     try:
         from hermes_constants import get_hermes_home, profile_name_for_home
 
@@ -372,17 +377,22 @@ def _default_db_path() -> Path:
 
 
 def _default_open_db(path: Path) -> sqlite3.Connection:
-    """Open with Hermes' ``sqlite_util.open_db`` so WAL/network-FS fallbacks and the busy
-    timeout apply, exactly like ``plugin_db``."""
-    from hermes_cli.sqlite_util import open_db
-
-    return open_db(
-        path,
-        db_label="plugin-data/corkboard/data.db",
-        foreign_keys=True,
-        row_factory=None,
-        check_same_thread=False,
-    )
+    """Open the shared board with stdlib ``sqlite3``: a 5s busy timeout, WAL (best-effort
+    on network filesystems), and foreign keys on — matching ``plugin_db``'s shape."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=5.0, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError:
+            # Network filesystems may refuse WAL; keep the current mode.
+            pass
+        conn.execute("PRAGMA foreign_keys = ON")
+    except Exception:
+        conn.close()
+        raise
+    return conn
 
 
 _db_path: Callable[[], Path] = _default_db_path
