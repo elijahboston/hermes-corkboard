@@ -9,6 +9,10 @@ STUBS.set('@hermes/plugin-sdk', [
   'export const ROUTES_AREA = null',
   'export const SIDEBAR_NAV_AREA = null',
   'export const STATUSBAR_AREAS = null',
+  'export const SETTINGS_PLUGINS_AREA = null',
+  'export const useValue = null',
+  'export const profileColor = null',
+  "export const atom = (init) => { let v = init; const ls = new Set(); return { get: () => v, set: (n) => { v = n; ls.forEach(l => l(v)); }, listen: (l) => { ls.add(l); return () => ls.delete(l); }, subscribe: (l) => { ls.add(l); l(v); return () => ls.delete(l); } }; }",
 ].join('; '))
 
 export async function resolve(specifier, context, nextResolve) {

@@ -49,6 +49,39 @@ status-bar badge (an open-pin count, hidden while there are no open pins). The p
 zone; it appears only when the desktop build supports `host.openWorkspace`. Re-opening re-fronts
 the existing tab rather than duplicating it.
 
+## Origin and link back
+
+Every pin records where it came from: the chat it was pinned in (`session`), a Bot Mode bot
+(`bot`), the kanban board (`kanban`), the CLI or slash command (`cli`), a markdown import
+(`import`), or the dashboard API (`api`). Each pin shows an origin chip — **Chat**, **Bot**,
+**Kanban**, **CLI**, **Imported**, or **API** — and a colour-coded card border. Only the origin
+is stored (a profile name, a session id, a board/task ref); message text is never stored.
+
+Where the origin can be re-opened, the board shows an **Open chat** / **Open board** button
+(click-only, never automatic):
+
+- **Chat** — `host.openSession(origin_session_id, { profile })`.
+- **Bot** — resolved at click time by **name**, never a stored id: the profile's `canonical_session`
+  (the "Bot Chat" registry row) is re-fetched from `profiles.list` and its live tip opened. A
+  stored session id dangles after compression, so it is never used — the same rule the Bots
+  roster enforces.
+- **Kanban** — navigates to `/kanban` (the board page has no per-board/per-task deep link).
+- **CLI / Import / API** — no button.
+
+If an open fails (the chat was pruned, the profile is gone), the button turns into an inline
+"Chat no longer available" and never throws. Bot chats also show the bot's avatar (fetched via
+`profiles.get_asset`, cached per profile) or an initial-letter circle when there is no image.
+
+The agent tool records the session id from the context Hermes injects into the handler — never
+from the tool arguments — so an agent cannot point a pin at a chat it did not come from.
+
+## Colours
+
+Card border colours are configurable in **Settings → Plugins → Corkboard**. Defaults: chat =
+blue, bot = violet, kanban = amber, CLI = slate, imported = teal, API = green. **Use each bot's
+colour** (on by default) makes bot cards use that bot's own `profileColor` instead of violet.
+Changes apply live without a reload. Preferences are per machine (`ctx.storage`).
+
 ## CLI
 
 ```bash

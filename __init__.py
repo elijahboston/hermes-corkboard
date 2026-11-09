@@ -94,6 +94,11 @@ def _tool_handler(args: dict[str, Any], retention_days: int = _RETENTION_DEFAULT
     action = (args.get("action") or "").strip()
     try:
         if action == "pin":
+            # Origin comes from the handler context Hermes injects, never the tool
+            # args: an agent must not be able to point a pin at a chat it did not
+            # come from. Bot Mode detection is left to the desktop (session -> bot
+            # upgrade via host.profiles.list bot_title).
+            origin_profile = store_mod.current_profile_name()
             row = actions.pin(
                 store,
                 title=args.get("title") or "",
@@ -101,13 +106,17 @@ def _tool_handler(args: dict[str, Any], retention_days: int = _RETENTION_DEFAULT
                 unblocks=args.get("unblocks"),
                 check_kind=args.get("check_kind"),
                 check_arg=args.get("check_arg"),
-                source=f"agent:{store_mod.current_profile_name()}",
+                source=f"agent:{origin_profile}",
                 dedupe_key=args.get("dedupe_key"),
                 kind=args.get("kind") or "task",
                 question=args.get("question"),
                 choices=args.get("choices"),
                 placeholder=args.get("placeholder"),
                 reply_to=args.get("reply_to"),
+                origin_kind="session",
+                origin_profile=origin_profile,
+                origin_session_id=kwargs.get("session_id"),
+                origin_platform=kwargs.get("platform"),
             )
             return json.dumps({"ok": True, "pin": row})
         if action == "list":
@@ -155,7 +164,7 @@ def _slash_handler(raw_args: str, retention_days: int = _RETENTION_DEFAULT, **kw
             row = actions.answer(store, parts[1], parts[2])
             return f"answered {row['id'][:8]} → {row['answer']}"
         if cmd == "add" and len(parts) >= 2:
-            row = actions.pin(store, title=" ".join(parts[1:]), source="manual")
+            row = actions.pin(store, title=" ".join(parts[1:]), source="manual", origin_kind="cli")
             return f"pinned {row['id'][:8]} {row['title']}"
         return "usage: /corkboard [open|done|dismissed|all|list|add <title>|done <id>|dismiss <id>|answer <id> <answer>]"
     except (ValueError, guard.SecretRejected) as exc:
@@ -238,10 +247,10 @@ def _cli_handler(args: Any, retention_days: int = _RETENTION_DEFAULT) -> int:
                 unblocks=getattr(args, "unblocks", None),
                 kind=getattr(args, "kind", "task"),
                 question=getattr(args, "question", None),
-                choices=getattr(args, "choices", None),
                 check_kind=check_kind,
                 check_arg=check_arg,
                 source="manual",
+                origin_kind="cli",
                 dedupe_key=getattr(args, "dedupe_key", None),
                 allow_command=True,
             )
@@ -308,6 +317,7 @@ def _on_blocked(**kwargs: Any) -> None:
             question=reason,
             kind="text",
             source=ref,
+            origin_kind="kanban",
             dedupe_key=ref,
             reply_to=ref,
         )
@@ -318,6 +328,7 @@ def _on_blocked(**kwargs: Any) -> None:
             title=reason,
             kind="task",
             source=ref,
+            origin_kind="kanban",
             dedupe_key=ref,
             reply_to=ref,
         )

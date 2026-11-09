@@ -118,6 +118,10 @@ def pin(
     choices: Optional[list[str]] = None,
     placeholder: Optional[str] = None,
     reply_to: Optional[str] = None,
+    origin_kind: Optional[str] = None,
+    origin_profile: Optional[str] = None,
+    origin_session_id: Optional[str] = None,
+    origin_platform: Optional[str] = None,
     allow_command: bool = False,
 ) -> dict[str, Any]:
     """Validate and create/update a pin. Raises ``ValueError`` / ``guard.SecretRejected``."""
@@ -168,6 +172,10 @@ def pin(
         choices=clean_choices,
         placeholder=placeholder,
         reply_to=reply_to,
+        origin_kind=origin_kind,
+        origin_profile=origin_profile,
+        origin_session_id=origin_session_id,
+        origin_platform=origin_platform,
     )
 
 
@@ -276,6 +284,7 @@ def import_markdown(store: Any, path: str | Path) -> list[dict[str, Any]]:
                         check_kind="dns_ns",
                         check_arg=f"{domain}={_NS_SUFFIX}",
                         source="manual",
+                        origin_kind="import",
                         dedupe_key=f"import:{plain_title.lower()} — {domain.lower()}",
                     )
                 )
@@ -295,6 +304,7 @@ def import_markdown(store: Any, path: str | Path) -> list[dict[str, Any]]:
                 check_kind=check_kind,
                 check_arg=check_arg,
                 source="manual",
+                origin_kind="import",
                 dedupe_key=f"import:{plain_title.lower()}",
             )
         )

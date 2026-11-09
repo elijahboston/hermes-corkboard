@@ -46,7 +46,11 @@ CREATE TABLE IF NOT EXISTS pins (
   answer TEXT,
   answer_note TEXT,
   answered_at INTEGER,
-  reply_to TEXT
+  reply_to TEXT,
+  origin_kind TEXT,
+  origin_profile TEXT,
+  origin_session_id TEXT,
+  origin_platform TEXT
 )
 """
 
@@ -61,7 +65,7 @@ _FIELDS = (
     "id", "title", "link", "unblocks", "check_kind", "check_arg", "source", "dedupe_key",
     "status", "created_at", "done_at", "closed_at", "last_checked_at", "last_check_result",
     "kind", "question", "choices", "placeholder", "answer", "answer_note", "answered_at",
-    "reply_to",
+    "reply_to", "origin_kind", "origin_profile", "origin_session_id", "origin_platform",
 )
 _SELECT = ", ".join(_FIELDS)
 
@@ -90,12 +94,28 @@ class Store:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Add ``closed_at`` to older boards and backfill it from ``done_at``."""
+        """Add columns to older boards and backfill ``closed_at`` / origin fields."""
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(pins)").fetchall()}
-        if "closed_at" not in cols:
-            self.conn.execute("ALTER TABLE pins ADD COLUMN closed_at INTEGER")
+        for column, sqltype in (
+            ("closed_at", "INTEGER"),
+            ("origin_kind", "TEXT"),
+            ("origin_profile", "TEXT"),
+            ("origin_session_id", "TEXT"),
+            ("origin_platform", "TEXT"),
+        ):
+            if column not in cols:
+                self.conn.execute(f"ALTER TABLE pins ADD COLUMN {column} {sqltype}")
         self.conn.execute(
             "UPDATE pins SET closed_at = done_at WHERE closed_at IS NULL AND done_at IS NOT NULL"
+        )
+        # Backfill origin from the pre-origin ``source`` encoding (one-time; idempotent).
+        self.conn.execute(
+            "UPDATE pins SET origin_kind = CASE "
+            "  WHEN source LIKE 'kanban:%' THEN 'kanban' "
+            "  WHEN source LIKE 'agent:%' THEN 'session' "
+            "  ELSE 'cli' END, "
+            "origin_profile = CASE WHEN source LIKE 'agent:%' THEN substr(source, 7) ELSE NULL END "
+            "WHERE origin_kind IS NULL"
         )
 
     # -- writes -----------------------------------------------------------------
@@ -114,6 +134,10 @@ class Store:
         choices: Optional[list[str]] = None,
         placeholder: Optional[str] = None,
         reply_to: Optional[str] = None,
+        origin_kind: Optional[str] = None,
+        origin_profile: Optional[str] = None,
+        origin_session_id: Optional[str] = None,
+        origin_platform: Optional[str] = None,
     ) -> dict[str, Any]:
         """Insert a pin, or upsert the row that shares ``dedupe_key``.
 
@@ -129,13 +153,17 @@ class Store:
         if dedupe_key:
             self.conn.execute(
                 "INSERT INTO pins (id, title, link, unblocks, check_kind, check_arg, source, "
-                "dedupe_key, status, created_at, kind, question, choices, placeholder, reply_to) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?) "
+                "dedupe_key, status, created_at, kind, question, choices, placeholder, reply_to, "
+                "origin_kind, origin_profile, origin_session_id, origin_platform) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(dedupe_key) DO UPDATE SET "
                 "title=excluded.title, link=excluded.link, unblocks=excluded.unblocks, "
                 "check_kind=excluded.check_kind, check_arg=excluded.check_arg, source=excluded.source, "
                 "kind=excluded.kind, question=excluded.question, choices=excluded.choices, "
-                "placeholder=excluded.placeholder, reply_to=excluded.reply_to, status='open', "
+                "placeholder=excluded.placeholder, reply_to=excluded.reply_to, "
+                "origin_kind=excluded.origin_kind, origin_profile=excluded.origin_profile, "
+                "origin_session_id=excluded.origin_session_id, origin_platform=excluded.origin_platform, "
+                "status='open', "
                 "done_at=CASE WHEN pins.status='open' THEN pins.done_at ELSE NULL END, "
                 "closed_at=CASE WHEN pins.status='open' THEN pins.closed_at ELSE NULL END, "
                 "answer=CASE WHEN pins.status='open' THEN pins.answer ELSE NULL END, "
@@ -144,7 +172,8 @@ class Store:
                 "last_checked_at=CASE WHEN pins.status='open' THEN pins.last_checked_at ELSE NULL END, "
                 "last_check_result=CASE WHEN pins.status='open' THEN pins.last_check_result ELSE NULL END",
                 (pin_id, title, link, unblocks, check_kind, check_arg, source, dedupe_key,
-                 now, kind, question, choices_json, placeholder, reply_to),
+                 now, kind, question, choices_json, placeholder, reply_to,
+                 origin_kind, origin_profile, origin_session_id, origin_platform),
             )
             self.conn.commit()
             row = self.conn.execute(
@@ -154,10 +183,12 @@ class Store:
 
         self.conn.execute(
             "INSERT INTO pins (id, title, link, unblocks, check_kind, check_arg, source, "
-            "dedupe_key, status, created_at, kind, question, choices, placeholder, reply_to) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "dedupe_key, status, created_at, kind, question, choices, placeholder, reply_to, "
+            "origin_kind, origin_profile, origin_session_id, origin_platform) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (pin_id, title, link, unblocks, check_kind, check_arg, source, dedupe_key, OPEN, now,
-             kind, question, choices_json, placeholder, reply_to),
+             kind, question, choices_json, placeholder, reply_to,
+             origin_kind, origin_profile, origin_session_id, origin_platform),
         )
         self.conn.commit()
         return self.get(pin_id)  # type: ignore[return-value]

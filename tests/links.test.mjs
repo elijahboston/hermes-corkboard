@@ -89,3 +89,87 @@ test('sortPins breaks created_at ties by id and does not mutate input', () => {
   assert.deepEqual(sorted.map((p) => p.id), ['m', 'z'])
   assert.deepEqual(input.map((p) => p.id), ['z', 'm'])
 })
+
+test('originLabel maps each kind to its chip label', () => {
+  assert.equal(plugin.originLabel({ origin_kind: 'session' }), 'Chat')
+  assert.equal(plugin.originLabel({ origin_kind: 'bot' }), 'Bot')
+  assert.equal(plugin.originLabel({ origin_kind: 'kanban' }), 'Kanban')
+  assert.equal(plugin.originLabel({ origin_kind: 'cli' }), 'CLI')
+  assert.equal(plugin.originLabel({ origin_kind: 'import' }), 'Imported')
+  assert.equal(plugin.originLabel({ origin_kind: 'api' }), 'API')
+})
+
+test('originLabel falls back to Chat for unknown kinds', () => {
+  assert.equal(plugin.originLabel({ origin_kind: 'bogus' }), 'Chat')
+  assert.equal(plugin.originLabel({}), 'Chat')
+})
+
+test('originAction carries a session id for a session origin', () => {
+  assert.deepEqual(
+    plugin.originAction({ origin_kind: 'session', origin_session_id: 's1', origin_profile: 'p' }),
+    { kind: 'session', session_id: 's1', profile: 'p' }
+  )
+})
+
+test('originAction never carries the stored session id for a bot origin', () => {
+  assert.deepEqual(
+    plugin.originAction({ origin_kind: 'bot', origin_profile: 'p', origin_session_id: 's1' }),
+    { kind: 'bot', profile: 'p' }
+  )
+})
+
+test('originAction parses a kanban ref from source', () => {
+  assert.deepEqual(
+    plugin.originAction({ origin_kind: 'kanban', source: 'kanban:core/t_1' }),
+    { kind: 'kanban', board: 'core', task: 't_1' }
+  )
+})
+
+test('originAction returns a bare kind for cli/import/api', () => {
+  assert.deepEqual(plugin.originAction({ origin_kind: 'cli' }), { kind: 'cli' })
+  assert.deepEqual(plugin.originAction({ origin_kind: 'import' }), { kind: 'import' })
+  assert.deepEqual(plugin.originAction({ origin_kind: 'api' }), { kind: 'api' })
+})
+
+test('parseKanbanRef defaults a missing board and rejects non-kanban refs', () => {
+  assert.deepEqual(plugin.parseKanbanRef('kanban:/t_1'), { board: 'default', task: 't_1' })
+  assert.equal(plugin.parseKanbanRef('nope'), null)
+})
+
+test('borderColor returns per-kind defaults', () => {
+  assert.equal(plugin.borderColor({ origin_kind: 'session' }), '#3b82f6')
+  assert.equal(plugin.borderColor({ origin_kind: 'bot' }, { botColors: false }), '#8b5cf6')
+  assert.equal(plugin.borderColor({ origin_kind: 'kanban' }), '#f59e0b')
+  assert.equal(plugin.borderColor({ origin_kind: 'cli' }), '#94a3b8')
+  assert.equal(plugin.borderColor({ origin_kind: 'import' }), '#14b8a6')
+  assert.equal(plugin.borderColor({ origin_kind: 'api' }), '#22c55e')
+})
+
+test('borderColor honours a colour override', () => {
+  assert.equal(plugin.borderColor({ origin_kind: 'session' }, { colors: { session: '#ff0000' } }), '#ff0000')
+})
+
+test('borderColor uses the bot colour when the toggle is on (default)', () => {
+  const profileColorFn = (name) => (name === 'worker' ? 'hsl(200 68% 58%)' : null)
+  assert.equal(
+    plugin.borderColor({ origin_kind: 'bot', origin_profile: 'worker' }, {}, profileColorFn),
+    'hsl(200 68% 58%)'
+  )
+})
+
+test('borderColor ignores the bot colour when the toggle is off', () => {
+  const profileColorFn = () => 'hsl(200 68% 58%)'
+  assert.equal(
+    plugin.borderColor({ origin_kind: 'bot', origin_profile: 'worker' }, { botColors: false }, profileColorFn),
+    '#8b5cf6'
+  )
+})
+
+test('borderColor falls back to cli colour for unknown kinds', () => {
+  assert.equal(plugin.borderColor({ origin_kind: 'bogus' }), '#94a3b8')
+  assert.equal(plugin.borderColor({}), '#94a3b8')
+})
+
+test('borderColor falls back to the default bot colour when profileColor returns nothing', () => {
+  assert.equal(plugin.borderColor({ origin_kind: 'bot', origin_profile: 'default' }, {}, () => null), '#8b5cf6')
+})
