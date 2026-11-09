@@ -173,3 +173,47 @@ test('borderColor falls back to cli colour for unknown kinds', () => {
 test('borderColor falls back to the default bot colour when profileColor returns nothing', () => {
   assert.equal(plugin.borderColor({ origin_kind: 'bot', origin_profile: 'default' }, {}, () => null), '#8b5cf6')
 })
+
+test('originName prefers bot_title for a bot profile', () => {
+  const profiles = [{ name: 'cleaner', bot_title: 'Cleaning Crew', display_name: 'Cleaner' }]
+  assert.equal(plugin.originName({ origin_kind: 'bot', origin_profile: 'cleaner' }, profiles), 'Cleaning Crew')
+})
+
+test('originName uses display_name for a non-bot profile', () => {
+  const profiles = [{ name: 'worker', display_name: 'Worker Bee' }]
+  assert.equal(plugin.originName({ origin_kind: 'session', origin_profile: 'worker' }, profiles), 'Worker Bee')
+})
+
+test('originName falls back to the profile name', () => {
+  const profiles = [{ name: 'worker' }]
+  assert.equal(plugin.originName({ origin_kind: 'session', origin_profile: 'worker' }, profiles), 'worker')
+})
+
+test('originName shows Hermes for the default profile without a display name', () => {
+  assert.equal(plugin.originName({ origin_kind: 'session', origin_profile: 'default' }, [{ name: 'default' }]), 'Hermes')
+})
+
+test('originName uses the default profile display_name when set', () => {
+  assert.equal(plugin.originName({ origin_kind: 'session', origin_profile: 'default' }, [{ name: 'default', display_name: 'Boss' }]), 'Boss')
+})
+
+test('originName returns the raw profile name when the profile is missing', () => {
+  assert.equal(plugin.originName({ origin_kind: 'session', origin_profile: 'gone' }, []), 'gone')
+})
+
+test('originName parses a legacy agent: source when origin_profile is absent', () => {
+  const profiles = [{ name: 'worker', display_name: 'Worker Bee' }]
+  assert.equal(plugin.originName({ origin_kind: 'session', source: 'agent:worker' }, profiles), 'Worker Bee')
+})
+
+test('originName returns null for cli, import, and api origins', () => {
+  assert.equal(plugin.originName({ origin_kind: 'cli', origin_profile: 'worker' }, []), null)
+  assert.equal(plugin.originName({ origin_kind: 'import' }, []), null)
+  assert.equal(plugin.originName({ origin_kind: 'api' }, []), null)
+})
+
+test('originName uses origin_profile for kanban and null otherwise', () => {
+  const profiles = [{ name: 'worker' }]
+  assert.equal(plugin.originName({ origin_kind: 'kanban', origin_profile: 'worker', source: 'kanban:core/t_1' }, profiles), 'worker')
+  assert.equal(plugin.originName({ origin_kind: 'kanban', source: 'kanban:core/t_1' }, profiles), null)
+})

@@ -124,6 +124,32 @@ const DEFAULT_ORIGIN_COLORS = {
 export function originLabel(pin) {
   return ORIGIN_LABELS[pin?.origin_kind] || 'Chat'
 }
+// The raw profile name behind a pin's origin, if any. Older rows predate
+// `origin_profile`; their `source` carries `agent:<profile>`. Kanban pins keep
+// their board/task text unless a profile was recorded.
+function originProfileName(pin) {
+  if (pin?.origin_profile) return pin.origin_profile
+  if (pin?.origin_kind === 'kanban') return null
+  const m = /^agent:(.+)$/.exec(String(pin?.source ?? ''))
+  return m ? m[1] : null
+}
+
+// The display name of the agent behind a pin, or null when there is none to show.
+export function originName(pin, profiles) {
+  const kind = pin?.origin_kind
+  if (kind === 'cli' || kind === 'import' || kind === 'api') return null
+  const profileName = originProfileName(pin)
+  if (!profileName) return null
+  const row = profilesByName(profiles).get(profileName)
+  if (profileName === 'default') {
+    if (row && String(row.display_name || '').trim()) return String(row.display_name).trim()
+    return 'Hermes'
+  }
+  if (row) {
+    return botTitleOf(row) || String(row.display_name || '').trim() || profileName
+  }
+  return profileName
+}
 
 // `kanban:<board>/<task>` -> `{ board, task }`, or null when it does not parse.
 export function parseKanbanRef(source) {
@@ -170,10 +196,6 @@ function botTitleOf(profile) {
     return bots.title.trim()
   }
   return ''
-}
-
-function botName(profile) {
-  return botTitleOf(profile) || String(profile?.display_name || profile?.name || '').trim()
 }
 
 function isBotProfile(profile) {
@@ -463,13 +485,13 @@ function DismissButton({ ctx, pin, onChanged }) {
 
 // -- origin UI -----------------------------------------------------------------
 
-function BotAvatar({ name, profile }) {
-  const image = useBotAvatar(name)
+function BotAvatar({ profileName, display, bot }) {
+  const image = useBotAvatar(bot ? profileName : null)
   if (image) {
     return jsx('img', { src: image, className: 'h-4 w-4 rounded-full object-cover', alt: '' })
   }
-  const initial = (botName(profile) || name || '?').charAt(0).toUpperCase()
-  const color = typeof profileColor === 'function' ? profileColor(name) : null
+  const initial = (display || profileName || '?').charAt(0).toUpperCase()
+  const color = typeof profileColor === 'function' ? profileColor(profileName) : null
   return jsx('span', {
     className: 'inline-flex h-4 w-4 items-center justify-center rounded-full text-[0.625rem] font-medium text-white',
     style: { backgroundColor: color || '#888888' },
@@ -478,18 +500,23 @@ function BotAvatar({ name, profile }) {
 }
 
 function OriginChip({ pin, profiles }) {
-  const kind = pin.origin_kind
   const label = originLabel(pin)
-  if (kind !== 'bot') {
+  const name = originName(pin, profiles)
+  if (!name) {
     return jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: label })
   }
-  const profile = profilesByName(profiles).get(pin.origin_profile) || null
-  const name = botName(profile)
-  return jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-    jsx(BotAvatar, { name: pin.origin_profile, profile }),
-    jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: label }),
-    name ? jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: name }) : null,
-  ].filter(Boolean) })
+  const profileName = originProfileName(pin)
+  const profile = profilesByName(profiles).get(profileName) || null
+  const bot = isBotProfile(profile)
+  return jsxs('span', {
+    className: 'inline-flex items-center gap-1',
+    title: `From ${name} (${profileName}) · ${label}`,
+    children: [
+      jsx(BotAvatar, { profileName, display: name, bot }),
+      jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: label }),
+      jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: name }),
+    ],
+  })
 }
 
 function OriginOpenButton({ pin }) {
