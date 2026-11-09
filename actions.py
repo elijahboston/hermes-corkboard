@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -20,6 +21,57 @@ AGENT_CHECK_KINDS = ("dns_ns", "kanban_unblocked")
 
 _NS_SUFFIX = "ns.cloudflare.com"
 _DIG_NS_RE = re.compile(r"dig\s+\+short\s+NS\s+(\S+)", re.IGNORECASE)
+_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def time_ago(seconds: Any, now: Optional[float] = None) -> str:
+    """Human "30 seconds ago" style age from an epoch-seconds timestamp."""
+    try:
+        secs = float(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if secs is None or secs <= 0:
+        return ""
+    now = time.time() if now is None else now
+    diff = max(0, int(now - secs))
+    if diff < 10:
+        return "just now"
+    if diff < 60:
+        return f"{diff} seconds ago"
+    minutes = diff // 60
+    if minutes < 60:
+        return "1 minute ago" if minutes == 1 else f"{minutes} minutes ago"
+    hours = minutes // 60
+    if hours < 24:
+        return "1 hour ago" if hours == 1 else f"{hours} hours ago"
+    days = hours // 24
+    if days < 7:
+        return "1 day ago" if days == 1 else f"{days} days ago"
+    if days < 30:
+        weeks = days // 7
+        return "1 week ago" if weeks == 1 else f"{weeks} weeks ago"
+    months = days // 30
+    if months < 12:
+        return "1 month ago" if months == 1 else f"{months} months ago"
+    years = days // 365
+    return "1 year ago" if years == 1 else f"{years} years ago"
+
+def _strip_bold(text: str) -> str:
+    return _BOLD_RE.sub(r"\1", text or "")
+
+
+def _is_domain(token: str) -> bool:
+    token = (token or "").strip().rstrip(".")
+    if not token or any(c in token for c in " <>/@:\\") or "/" in token:
+        return False
+    if token.startswith(("http://", "https://")):
+        return False
+    return "." in token
+
+
+def _bold_domains(title: str) -> list[str]:
+    return [m.group(1).strip() for m in _BOLD_RE.finditer(title or "") if _is_domain(m.group(1))]
+
 
 
 # -- seams (stubbed in tests) ---------------------------------------------------
@@ -119,8 +171,8 @@ def pin(
     )
 
 
-def list_pins(store: Any, status: Optional[str] = None) -> list[dict[str, Any]]:
-    return store.list_pins(status=status)
+def list_pins(store: Any, status: str = "open", sort: str = "newest") -> list[dict[str, Any]]:
+    return store.list_pins(status=status, sort=sort)
 
 
 def get_pin(store: Any, pin_id: Optional[str]) -> Optional[dict[str, Any]]:
@@ -207,22 +259,43 @@ def import_markdown(store: Any, path: str | Path) -> list[dict[str, Any]]:
         link = (row.get("Where") or "").strip() or None
         unblocks = (row.get("Unblocks") or "").strip() or None
         check_cell = (row.get("Check") or "").strip()
+        m = _DIG_NS_RE.search(check_cell)
+        raw_domain = m.group(1).strip("`").strip() if m else None
+        is_placeholder = bool(raw_domain) and raw_domain.startswith("<") and raw_domain.endswith(">")
+        plain_title = _strip_bold(title)
+        domains = _bold_domains(title)
+
+        if m and is_placeholder and domains:
+            for domain in domains:
+                imported.append(
+                    pin(
+                        store,
+                        title=f"{plain_title} — {domain}",
+                        link=link,
+                        unblocks=unblocks,
+                        check_kind="dns_ns",
+                        check_arg=f"{domain}={_NS_SUFFIX}",
+                        source="manual",
+                        dedupe_key=f"import:{plain_title.lower()} — {domain.lower()}",
+                    )
+                )
+            continue
+
         check_kind: Optional[str] = None
         check_arg: Optional[str] = None
-        m = _DIG_NS_RE.search(check_cell)
-        if m:
-            domain = m.group(1).strip("`")
-            check_kind, check_arg = "dns_ns", f"{domain}={_NS_SUFFIX}"
+        if m and not is_placeholder and raw_domain and _is_domain(raw_domain):
+            check_kind, check_arg = "dns_ns", f"{raw_domain}={_NS_SUFFIX}"
+
         imported.append(
             pin(
                 store,
-                title=title,
+                title=plain_title,
                 link=link,
                 unblocks=unblocks,
                 check_kind=check_kind,
                 check_arg=check_arg,
                 source="manual",
-                dedupe_key=f"import:{title.lower()}",
+                dedupe_key=f"import:{plain_title.lower()}",
             )
         )
     return imported
@@ -235,6 +308,7 @@ def format_pins(pins: list[dict[str, Any]]) -> str:
     lines = [f"{len(pins)} pin(s)"]
     for p in pins:
         lines.append(f"{p['id'][:8]}  [{p['kind']}]  {p['title']}")
+        lines.append(f"    {time_ago(p.get('created_at'))}")
         if p.get("link"):
             lines.append(f"    link: {p['link']}")
         if p.get("unblocks"):
@@ -243,4 +317,8 @@ def format_pins(pins: list[dict[str, Any]]) -> str:
             lines.append(f"    check: {p['check_kind']} {p.get('check_arg') or ''}".rstrip())
         if p.get("answer"):
             lines.append(f"    answer: {p['answer']}")
+        if p.get("status") in ("done", "dismissed"):
+            closed = p.get("closed_at") or p.get("done_at") or p.get("answered_at")
+            if closed:
+                lines.append(f"    {p['status']} {time_ago(closed)}")
     return "\n".join(lines)

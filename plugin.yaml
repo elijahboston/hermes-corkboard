@@ -10,3 +10,8 @@ provides_hooks:
   - kanban_task_blocked
   - kanban_task_completed
   - on_kanban_dispatch_tick
+config_schema:
+  retention_days:
+    type: int
+    default: 30
+    description: How many days closed (done/dismissed) pins stay on the board; 0 keeps them forever.

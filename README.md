@@ -43,7 +43,8 @@ default profile.
 ## CLI
 
 ```bash
-hermes corkboard                    # list open pins (default)
+hermes corkboard                         # list open pins, newest first (default)
+hermes corkboard list --status all --sort oldest
 hermes corkboard add "File the LLC" --link https://… --unblocks "EIN"
 hermes corkboard add "Nameservers"  --check-dns example.com=ns.cloudflare.com
 hermes corkboard add "Nightly job"  --check-command "systemctl is-active cron"
@@ -51,10 +52,24 @@ hermes corkboard done <id>
 hermes corkboard dismiss <id>
 hermes corkboard answer <id> yes|no|"free text"
 hermes corkboard check              # run every open check now
+hermes corkboard purge [--dry-run]  # delete closed pins past the retention window
 hermes corkboard import ~/notes/Owner\ Corkboard.md
 ```
 
-`<id>` may be the full uuid or a unique prefix.
+`<id>` may be the full uuid or a unique prefix. The slash command takes the same status
+filter: `/corkboard [open|done|dismissed|all]`.
+
+## Retention
+
+Done and dismissed pins leave the Open view immediately but stay on the board for
+`retention_days` (default 30) so you can still see what was acknowledged and when. `0` keeps
+closed pins forever. Purging runs opportunistically on list and on the dispatch tick, at most
+once per hour, and always skips open pins.
+
+```bash
+hermes config set plugins.entries.corkboard.settings.retention_days 14
+```
+
 
 ## Periodic checks (add yourself)
 

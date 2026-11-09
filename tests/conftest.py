@@ -59,6 +59,13 @@ class StubCtx:
         self.tools: dict[str, dict[str, Any]] = {}
         self.commands: dict[str, dict[str, Any]] = {}
         self.cli_commands: dict[str, dict[str, Any]] = {}
+        self._config: dict[str, Any] = {}
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        return self._config.get(key, default)
+
+    def set_config(self, key: str, value: Any) -> None:
+        self._config[key] = value
 
     def register_hook(self, name: str, callback: Callable[..., Any]) -> None:
         self.hooks[name] = callback

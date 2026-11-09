@@ -9,6 +9,50 @@ import { host, haptic, ROUTES_AREA, SIDEBAR_NAV_AREA, STATUSBAR_AREAS } from '@h
 
 const PIN_CHANGED = 'plugin.corkboard.pins.changed'
 
+// -- pure helpers (exported so `tests/links.test.mjs` can exercise them) --------
+
+// A title may carry markdown emphasis (`**bold**`); render it as plain text.
+export function plainText(text) {
+  return String(text ?? '').replace(/\*\*/g, '')
+}
+
+// Return a safe external URL for a pin link, or null when the text is not a URL.
+export function linkTarget(text) {
+  const t = (text || '').trim()
+  if (!t) return null
+  if (/^https?:\/\//i.test(t)) return t
+  // Bare host-path like `github.com/owner/repo`: accept only when the first token
+  // looks like a hostname with a dot and there are no spaces.
+  const first = t.split(/\s+/)[0]
+  if (!/\s/.test(t) && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d+)?([/?#].*)?$/i.test(first)) {
+    return 'https://' + t
+  }
+  return null
+}
+
+// "30 seconds ago" style age from an epoch-seconds timestamp.
+export function timeAgo(seconds, now = Date.now() / 1000) {
+  const s = Number(seconds)
+  if (!Number.isFinite(s) || s <= 0) return ''
+  const diff = Math.max(0, Math.floor(now - s))
+  if (diff < 10) return 'just now'
+  if (diff < 60) return `${diff} seconds ago`
+  const minutes = Math.floor(diff / 60)
+  if (minutes < 60) return minutes === 1 ? '1 minute ago' : `${minutes} minutes ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return days === 1 ? '1 day ago' : `${days} days ago`
+  if (days < 30) {
+    const weeks = Math.floor(days / 7)
+    return weeks === 1 ? '1 week ago' : `${weeks} weeks ago`
+  }
+  const months = Math.floor(days / 30)
+  if (months < 12) return months === 1 ? '1 month ago' : `${months} months ago`
+  const years = Math.floor(days / 365)
+  return years === 1 ? '1 year ago' : `${years} years ago`
+}
+
 function btn(primary) {
   return primary
     ? 'rounded px-2 py-1 text-xs font-medium bg-(--ui-accent) text-(--ui-accent-fg)'
@@ -19,13 +63,21 @@ function inputCls() {
   return 'min-w-0 flex-1 rounded border border-(--ui-border) bg-(--ui-bg) px-2 py-1 text-xs'
 }
 
-function usePins(ctx) {
+const STATUSES = [
+  ['open', 'Open'],
+  ['done', 'Acknowledged'],
+  ['dismissed', 'Dismissed'],
+  ['all', 'All'],
+]
+
+function usePins(ctx, status = 'open', sort = 'newest') {
   const [pins, setPins] = useState([])
   const [loaded, setLoaded] = useState(false)
 
   const reload = useCallback(async () => {
     try {
-      const data = await ctx.rest('/pins')
+      const path = `/pins?status=${encodeURIComponent(status)}&sort=${encodeURIComponent(sort)}`
+      const data = await ctx.rest(path)
       const list = Array.isArray(data) ? data : (data && data.pins) || []
       setPins(list)
     } catch (_err) {
@@ -33,7 +85,7 @@ function usePins(ctx) {
     } finally {
       setLoaded(true)
     }
-  }, [ctx])
+  }, [ctx, status, sort])
 
   useEffect(() => { reload() }, [reload])
 
@@ -134,14 +186,29 @@ function DismissButton({ ctx, pin, onChanged }) {
 }
 
 function PinRow({ ctx, pin, onChanged }) {
-  const controls = pin.kind === 'yes_no' ? jsx(YesNoAnswer, { ctx, pin, onChanged })
+  const isOpen = pin.status === 'open'
+  const now = Date.now() / 1000
+
+  const controls = !isOpen ? null
+    : pin.kind === 'yes_no' ? jsx(YesNoAnswer, { ctx, pin, onChanged })
     : pin.kind === 'choice' ? jsx(ChoiceAnswer, { ctx, pin, onChanged })
     : pin.kind === 'text' ? jsx(TextAnswer, { ctx, pin, onChanged })
     : jsx(TaskControls, { ctx, pin, onChanged })
 
-  const title = pin.link
-    ? jsx('a', { href: pin.link, className: 'font-medium text-(--ui-text) hover:underline', children: pin.title })
-    : jsx('span', { className: 'font-medium text-(--ui-text)', children: pin.title })
+  const titleText = plainText(pin.title)
+  const url = linkTarget(pin.link)
+  const title = url
+    ? jsx('button', {
+        type: 'button',
+        onClick: (e) => { e.preventDefault(); ctx.os.openExternal(url) },
+        className: 'text-left font-medium text-(--ui-text) hover:underline',
+        children: titleText,
+      })
+    : jsx('span', { className: 'font-medium text-(--ui-text)', children: titleText })
+
+  const where = pin.link && !url
+    ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `where: ${plainText(pin.link)}` })
+    : null
 
   const question = pin.question
     ? jsx('div', { className: 'text-xs text-(--ui-text-secondary)', children: pin.question })
@@ -155,24 +222,84 @@ function PinRow({ ctx, pin, onChanged }) {
     ? jsxs('div', { className: 'flex flex-col gap-0.5', children: [question, unblocks].filter(Boolean) })
     : null
 
+  let closed = null
+  if (!isOpen) {
+    const closedAt = pin.answered_at || pin.closed_at || pin.done_at
+    if (pin.answer) {
+      closed = jsxs('div', { className: 'flex flex-col gap-0.5', children: [
+        jsx('div', { className: 'text-xs text-(--ui-text-secondary)', children: `answer: ${pin.answer}` }),
+        closedAt ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: timeAgo(closedAt, now) }) : null,
+      ] })
+    } else if (closedAt) {
+      const label = pin.status === 'done' ? 'done' : 'dismissed'
+      closed = jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `${label} ${timeAgo(closedAt, now)}` })
+    }
+  }
+
+  const age = jsx('div', {
+    className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+    title: pin.created_at ? new Date(pin.created_at * 1000).toLocaleString() : undefined,
+    children: timeAgo(pin.created_at, now),
+  })
+
+  const actions = isOpen
+    ? jsxs('div', { className: 'flex items-center gap-2', children: [
+        controls,
+        jsx(DismissButton, { ctx, pin, onChanged }),
+      ].filter(Boolean) })
+    : null
+
   return jsxs('div', { className: 'rounded border border-(--ui-border) p-2 flex flex-col gap-1.5', children: [
     title,
+    where,
     meta,
-    jsxs('div', { className: 'flex items-center gap-2', children: [controls, jsx(DismissButton, { ctx, pin, onChanged })] }),
+    closed,
+    age,
+    actions,
+  ].filter(Boolean) })
+}
+
+function FilterBar({ status, onStatus, sort, onSort }) {
+  const tabs = STATUSES.map(([value, label]) =>
+    jsx('button', {
+      type: 'button', key: value, onClick: () => onStatus(value),
+      className: status === value
+        ? 'rounded px-2 py-0.5 text-[0.6875rem] font-medium bg-(--ui-accent) text-(--ui-accent-fg)'
+        : 'rounded px-2 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--ui-surface)',
+      children: label,
+    })
+  )
+  return jsxs('div', { className: 'flex flex-wrap items-center gap-1 px-3 pt-2', children: [
+    ...tabs,
+    jsx('button', {
+      type: 'button',
+      onClick: () => onSort(sort === 'newest' ? 'oldest' : 'newest'),
+      className: 'ml-auto rounded px-2 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--ui-surface)',
+      children: sort === 'newest' ? 'Newest' : 'Oldest',
+    }),
   ] })
 }
 
 function PinList({ ctx }) {
-  const { pins, loaded, reload } = usePins(ctx)
+  const [status, setStatus] = useState('open')
+  const [sort, setSort] = useState('newest')
+  const { pins, loaded, reload } = usePins(ctx, status, sort)
+
   if (!loaded) {
     return jsx('div', { className: 'p-3 text-xs text-(--ui-text-tertiary)', children: 'Loading…' })
   }
-  if (pins.length === 0) {
-    return jsx('div', { className: 'p-3 text-xs text-(--ui-text-tertiary)', children: 'Corkboard is empty.' })
-  }
-  return jsxs('div', { className: 'flex flex-col gap-2 p-3', children: [
-    jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `${pins.length} open` }),
-    ...pins.map((pin) => jsx(PinRow, { ctx, pin, onChanged: reload, key: pin.id })),
+
+  const label = status === 'open' ? 'open'
+    : status === 'done' ? 'acknowledged'
+    : status === 'dismissed' ? 'dismissed'
+    : 'pins'
+
+  return jsxs('div', { className: 'flex flex-col gap-2', children: [
+    jsx(FilterBar, { status, onStatus: setStatus, sort, onSort: setSort }),
+    jsx('div', { className: 'px-3 text-[0.6875rem] text-(--ui-text-tertiary)', children: `${pins.length} ${label}` }),
+    pins.length === 0
+      ? jsx('div', { className: 'px-3 text-xs text-(--ui-text-tertiary)', children: 'Corkboard is empty.' })
+      : jsxs('div', { className: 'flex flex-col gap-2 px-3 pb-3', children: pins.map((pin) => jsx(PinRow, { ctx, pin, onChanged: reload, key: pin.id })) }),
   ] })
 }
 
@@ -184,7 +311,7 @@ function CorkboardView({ ctx }) {
 }
 
 function StatusBadge({ ctx }) {
-  const { pins, loaded } = usePins(ctx)
+  const { pins, loaded } = usePins(ctx, 'open', 'newest')
   if (!loaded) return null
   return jsx('button', {
     type: 'button',

@@ -27,10 +27,27 @@ def _require(pin_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"no pin {pin_id!r}")
     return row
 
+def _retention_days() -> int:
+    """Read ``plugins.entries.corkboard.settings.retention_days`` (30 when unset)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        entry = (cfg.get("plugins") or {}).get("entries", {}).get("corkboard") or {}
+        settings = entry.get("settings") or {}
+        return int(settings.get("retention_days", 30))
+    except Exception:
+        return 30
+
 
 @router.get("/pins")
-async def list_pins() -> list[dict[str, Any]]:
-    return actions.list_pins(_store())
+async def list_pins(status: str = "open", sort: str = "newest") -> list[dict[str, Any]]:
+    store = _store()
+    store_mod.maybe_purge(store, _retention_days())
+    try:
+        return actions.list_pins(store, status=status, sort=sort)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/pins/{pin_id}/done")

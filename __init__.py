@@ -16,6 +16,22 @@ from . import actions, checks, guard, store as store_mod
 
 logger = __import__("logging").getLogger(__name__)
 
+_RETENTION_DEFAULT = 30
+
+
+def _read_settings(ctx: Any) -> dict[str, int]:
+    """Read plugin settings from the Hermes ctx (defaults match ``config_schema``)."""
+    try:
+        retention_days = int(ctx.get_config("retention_days", default=_RETENTION_DEFAULT))
+    except (TypeError, ValueError):
+        retention_days = _RETENTION_DEFAULT
+    return {"retention_days": retention_days}
+
+
+def _list_pins(store: Any, retention_days: int, status: str = "open", sort: str = "newest") -> list[dict[str, Any]]:
+    store_mod.maybe_purge(store, retention_days)
+    return actions.list_pins(store, status=status, sort=sort)
+
 CORKBOARD_SCHEMA = {
     "name": "corkboard",
     "description": (
@@ -63,10 +79,6 @@ CORKBOARD_SCHEMA = {
                 "type": "string",
                 "description": "Check argument: 'domain=suffix' for dns_ns, 'board/task' for kanban_unblocked.",
             },
-            "dedupe_key": {
-                "type": "string",
-                "description": "Stable key; re-pinning with the same key updates instead of duplicating.",
-            },
             "reply_to": {
                 "type": "string",
                 "description": "Route the answer: 'kanban:<board>/<task>' or 'session:<profile>/<id>'.",
@@ -77,9 +89,7 @@ CORKBOARD_SCHEMA = {
     },
 }
 
-
-# -- tool ----------------------------------------------------------------------
-def _tool_handler(args: dict[str, Any], **kwargs: Any) -> str:
+def _tool_handler(args: dict[str, Any], retention_days: int = _RETENTION_DEFAULT, **kwargs: Any) -> str:
     store = store_mod.get_store()
     action = (args.get("action") or "").strip()
     try:
@@ -101,7 +111,7 @@ def _tool_handler(args: dict[str, Any], **kwargs: Any) -> str:
             )
             return json.dumps({"ok": True, "pin": row})
         if action == "list":
-            pins = actions.list_pins(store)
+            pins = _list_pins(store, retention_days)
             return json.dumps(
                 {"ok": True, "count": len(pins), "pins": pins, "text": actions.format_pins(pins)}
             )
@@ -122,13 +132,19 @@ def _tool_handler(args: dict[str, Any], **kwargs: Any) -> str:
 
 
 # -- slash ---------------------------------------------------------------------
-def _slash_handler(raw_args: str, **kwargs: Any) -> str:
+def _slash_handler(raw_args: str, retention_days: int = _RETENTION_DEFAULT, **kwargs: Any) -> str:
     store = store_mod.get_store()
     parts = shlex.split(raw_args or "")
-    cmd = parts[0] if parts else "list"
+    statuses = ("open", "done", "dismissed", "all")
     try:
+        if not parts:
+            return actions.format_pins(_list_pins(store, retention_days))
+        cmd = parts[0]
+        if cmd in statuses and len(parts) == 1:
+            return actions.format_pins(_list_pins(store, retention_days, status=cmd))
         if cmd == "list":
-            return actions.format_pins(actions.list_pins(store))
+            status = parts[1] if len(parts) >= 2 and parts[1] in statuses else "open"
+            return actions.format_pins(_list_pins(store, retention_days, status=status))
         if cmd == "done" and len(parts) >= 2:
             row = actions.done(store, parts[1])
             return f"done {row['id'][:8]} {row['title']}"
@@ -141,7 +157,7 @@ def _slash_handler(raw_args: str, **kwargs: Any) -> str:
         if cmd == "add" and len(parts) >= 2:
             row = actions.pin(store, title=" ".join(parts[1:]), source="manual")
             return f"pinned {row['id'][:8]} {row['title']}"
-        return "usage: /corkboard [list|add <title>|done <id>|dismiss <id>|answer <id> <answer>]"
+        return "usage: /corkboard [open|done|dismissed|all|list|add <title>|done <id>|dismiss <id>|answer <id> <answer>]"
     except (ValueError, guard.SecretRejected) as exc:
         return f"corkboard: {exc}"
 
@@ -150,7 +166,9 @@ def _slash_handler(raw_args: str, **kwargs: Any) -> str:
 def _setup_argparse(subparser: Any) -> None:
     subs = subparser.add_subparsers(dest="corkboard_command")
 
-    subs.add_parser("list", help="List open pins")
+    p_list = subs.add_parser("list", help="List pins (default: open, newest)")
+    p_list.add_argument("--status", choices=["open", "done", "dismissed", "all"], default="open")
+    p_list.add_argument("--sort", choices=["newest", "oldest"], default="newest")
 
     p_add = subs.add_parser("add", help="Add a pin")
     p_add.add_argument("title", help="One line: what is needed")
@@ -177,18 +195,30 @@ def _setup_argparse(subparser: Any) -> None:
 
     subs.add_parser("check", help="Run all open checks now")
 
+    p_purge = subs.add_parser("purge", help="Purge closed pins older than the retention setting")
+    p_purge.add_argument("--dry-run", action="store_true")
+
     p_import = subs.add_parser("import", help="Import a markdown corkboard table")
     p_import.add_argument("path")
 
     subparser.set_defaults(func=_cli_handler)
 
 
-def _cli_handler(args: Any) -> int:
+def _cli_handler(args: Any, retention_days: int = _RETENTION_DEFAULT) -> int:
     store = store_mod.get_store()
     cmd = getattr(args, "corkboard_command", None) or "list"
     try:
         if cmd == "list":
-            print(actions.format_pins(actions.list_pins(store)))
+            status = getattr(args, "status", "open")
+            sort = getattr(args, "sort", "newest")
+            print(actions.format_pins(_list_pins(store, retention_days, status=status, sort=sort)))
+        elif cmd == "purge":
+            dry_run = bool(getattr(args, "dry_run", False))
+            purged = store.purge_closed(retention_days, dry_run=dry_run)
+            if dry_run:
+                print(f"would purge {purged} closed pins")
+            else:
+                print(f"purged {purged} closed pins")
         elif cmd == "add":
             check_kind = check_arg = None
             flags = [
@@ -301,11 +331,12 @@ def _on_completed(**kwargs: Any) -> None:
     _mark_done_by_dedupe(store_mod.get_store(), f"kanban:{board}/{task_id}")
 
 
-def _on_tick(**kwargs: Any) -> None:
+def _on_tick(retention_days: int = _RETENTION_DEFAULT, **kwargs: Any) -> None:
     if kwargs.get("dry_run"):
         return
     board = kwargs.get("board") or "default"
     store = store_mod.get_store()
+    store_mod.maybe_purge(store, retention_days)
     kanban_pins = [p for p in store.list_pins(status="open") if (p.get("source") or "").startswith("kanban:")]
     if not kanban_pins:
         return
@@ -320,11 +351,14 @@ def _on_tick(**kwargs: Any) -> None:
 
 # -- registration --------------------------------------------------------------
 def register(ctx: Any) -> None:
+    settings = _read_settings(ctx)
+    retention_days = settings["retention_days"]
+
     ctx.register_tool(
         name="corkboard",
         toolset="corkboard",
         schema=CORKBOARD_SCHEMA,
-        handler=_tool_handler,
+        handler=lambda args, **kw: _tool_handler(args, retention_days=retention_days, **kw),
         description="Pin owner-only work with auto-clearing checks",
         emoji="📌",
     )
@@ -332,14 +366,17 @@ def register(ctx: Any) -> None:
         name="corkboard",
         help="Owner corkboard: pin owner-only work, run checks, import the markdown board",
         setup_fn=_setup_argparse,
-        handler_fn=_cli_handler,
+        handler_fn=lambda args: _cli_handler(args, retention_days=retention_days),
     )
     ctx.register_command(
         "corkboard",
-        handler=_slash_handler,
+        handler=lambda raw, **kw: _slash_handler(raw, retention_days=retention_days, **kw),
         description="Show the owner corkboard",
-        args_hint="[list|add <title>|done <id>|dismiss <id>|answer <id> <answer>]",
+        args_hint="[open|done|dismissed|all|list|add <title>|done <id>|dismiss <id>|answer <id> <answer>]",
     )
     ctx.register_hook("kanban_task_blocked", _on_blocked)
     ctx.register_hook("kanban_task_completed", _on_completed)
-    ctx.register_hook("on_kanban_dispatch_tick", _on_tick)
+    ctx.register_hook(
+        "on_kanban_dispatch_tick",
+        lambda **kw: _on_tick(retention_days=retention_days, **kw),
+    )

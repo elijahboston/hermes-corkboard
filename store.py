@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS pins (
   status TEXT NOT NULL DEFAULT 'open',
   created_at INTEGER NOT NULL,
   done_at INTEGER,
+  closed_at INTEGER,
   last_checked_at INTEGER,
   last_check_result TEXT,
   kind TEXT NOT NULL DEFAULT 'task',
@@ -49,9 +50,16 @@ CREATE TABLE IF NOT EXISTS pins (
 )
 """
 
+_META_SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)
+"""
+
 _FIELDS = (
     "id", "title", "link", "unblocks", "check_kind", "check_arg", "source", "dedupe_key",
-    "status", "created_at", "done_at", "last_checked_at", "last_check_result",
+    "status", "created_at", "done_at", "closed_at", "last_checked_at", "last_check_result",
     "kind", "question", "choices", "placeholder", "answer", "answer_note", "answered_at",
     "reply_to",
 )
@@ -77,7 +85,18 @@ class Store:
         self.conn = conn
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(_SCHEMA)
+        self.conn.execute(_META_SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add ``closed_at`` to older boards and backfill it from ``done_at``."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(pins)").fetchall()}
+        if "closed_at" not in cols:
+            self.conn.execute("ALTER TABLE pins ADD COLUMN closed_at INTEGER")
+        self.conn.execute(
+            "UPDATE pins SET closed_at = done_at WHERE closed_at IS NULL AND done_at IS NOT NULL"
+        )
 
     # -- writes -----------------------------------------------------------------
     def pin(
@@ -118,6 +137,7 @@ class Store:
                 "kind=excluded.kind, question=excluded.question, choices=excluded.choices, "
                 "placeholder=excluded.placeholder, reply_to=excluded.reply_to, status='open', "
                 "done_at=CASE WHEN pins.status='open' THEN pins.done_at ELSE NULL END, "
+                "closed_at=CASE WHEN pins.status='open' THEN pins.closed_at ELSE NULL END, "
                 "answer=CASE WHEN pins.status='open' THEN pins.answer ELSE NULL END, "
                 "answer_note=CASE WHEN pins.status='open' THEN pins.answer_note ELSE NULL END, "
                 "answered_at=CASE WHEN pins.status='open' THEN pins.answered_at ELSE NULL END, "
@@ -147,8 +167,10 @@ class Store:
             raise ValueError(f"unknown status {status!r}")
         now = int(time.time())
         done_at = now if status == DONE else None
+        closed_at = now if status in (DONE, DISMISSED) else None
         cur = self.conn.execute(
-            "UPDATE pins SET status=?, done_at=? WHERE id=?", (status, done_at, pin_id)
+            "UPDATE pins SET status=?, done_at=?, closed_at=? WHERE id=?",
+            (status, done_at, closed_at, pin_id),
         )
         self.conn.commit()
         return cur.rowcount > 0
@@ -156,8 +178,8 @@ class Store:
     def answer(self, pin_id: str, answer: str, note: Optional[str] = None) -> bool:
         now = int(time.time())
         cur = self.conn.execute(
-            "UPDATE pins SET answer=?, answer_note=?, answered_at=?, status=?, done_at=? WHERE id=?",
-            (answer, note, now, DONE, now, pin_id),
+            "UPDATE pins SET answer=?, answer_note=?, answered_at=?, status=?, done_at=?, closed_at=? WHERE id=?",
+            (answer, note, now, DONE, now, now, pin_id),
         )
         self.conn.commit()
         return cur.rowcount > 0
@@ -166,9 +188,9 @@ class Store:
         now = int(time.time())
         if ok:
             cur = self.conn.execute(
-                "UPDATE pins SET last_checked_at=?, last_check_result=?, status=?, done_at=? "
+                "UPDATE pins SET last_checked_at=?, last_check_result=?, status=?, done_at=?, closed_at=? "
                 "WHERE id=?",
-                (now, result, DONE, now, pin_id),
+                (now, result, DONE, now, now, pin_id),
             )
         else:
             cur = self.conn.execute(
@@ -199,16 +221,87 @@ class Store:
         ).fetchall()
         return [d for d in (_row(r) for r in rows) if d is not None]
 
-    def list_pins(self, status: Optional[str] = None) -> list[dict[str, Any]]:
+    def list_pins(self, status: Optional[str] = None, sort: str = "newest") -> list[dict[str, Any]]:
+        status = normalize_status(status)
+        order = normalize_sort(sort)
+        direction = "ASC" if order == "oldest" else "DESC"
         if status is not None:
             rows = self.conn.execute(
-                f"SELECT {_SELECT} FROM pins WHERE status = ? ORDER BY created_at DESC", (status,)
+                f"SELECT {_SELECT} FROM pins WHERE status = ? ORDER BY created_at {direction}",
+                (status,),
             ).fetchall()
         else:
             rows = self.conn.execute(
-                f"SELECT {_SELECT} FROM pins ORDER BY created_at DESC"
+                f"SELECT {_SELECT} FROM pins ORDER BY created_at {direction}"
             ).fetchall()
         return [d for d in (_row(r) for r in rows) if d is not None]
+
+    def purge_closed(self, retention_days: int, now: Optional[int] = None, dry_run: bool = False) -> int:
+        """Delete done/dismissed pins closed more than ``retention_days`` days ago.
+
+        ``0`` (or negative) keeps every closed pin. Open pins are never purged.
+        """
+        if not retention_days or int(retention_days) <= 0:
+            return 0
+        cutoff = int(now if now is not None else time.time()) - int(retention_days) * 86400
+        if dry_run:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM pins WHERE status != 'open' AND closed_at IS NOT NULL "
+                "AND closed_at < ?",
+                (cutoff,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        cur = self.conn.execute(
+            "DELETE FROM pins WHERE status != 'open' AND closed_at IS NOT NULL AND closed_at < ?",
+            (cutoff,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    # -- meta (small key/value table for throttling bookkeeping) ----------------
+    def get_meta(self, key: str) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row[0]
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+
+def normalize_status(status: Optional[str]) -> Optional[str]:
+    """Validate a status filter; ``all``/``None`` mean no filter."""
+    if status is None or status == "all":
+        return None
+    if status not in _STATUSES:
+        raise ValueError(f"unknown status {status!r} (choose open, done, dismissed, all)")
+    return status
+
+
+def normalize_sort(sort: str) -> str:
+    if sort not in ("newest", "oldest"):
+        raise ValueError(f"unknown sort {sort!r} (choose newest, oldest)")
+    return sort
+
+
+def maybe_purge(store: "Store", retention_days: int, *, force: bool = False, now: Optional[int] = None) -> int:
+    """Purge closed pins at most once per hour (``force`` bypasses the throttle)."""
+    if not retention_days or int(retention_days) <= 0:
+        return 0
+    now = int(now if now is not None else time.time())
+    last_raw = store.get_meta("last_purge_at")
+    if not force and last_raw is not None:
+        try:
+            if now - int(last_raw) < 3600:
+                return 0
+        except ValueError:
+            pass
+    purged = store.purge_closed(retention_days, now=now)
+    store.set_meta("last_purge_at", str(now))
+    return purged
+
 
 
 # -- profile identity ----------------------------------------------------------
