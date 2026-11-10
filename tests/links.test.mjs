@@ -55,9 +55,9 @@ test('metaLine gives an open pin only a Pinned segment', () => {
   assert.ok(segments[0].iso.length > 0)
 })
 
-test('metaLine labels a done pin Pinned · Acknowledged', () => {
+test('metaLine labels a done pin Pinned · Done', () => {
   const segments = plugin.metaLine({ status: 'done', created_at: NOW - 7 * 3600, closed_at: NOW - 120 }, NOW)
-  assert.deepEqual(segments.map(s => s.label), ['Pinned', 'Acknowledged'])
+  assert.deepEqual(segments.map(s => s.label), ['Pinned', 'Done'])
   assert.equal(segments[0].ago, '7 hours ago')
   assert.equal(segments[1].ago, '2 minutes ago')
   assert.ok(segments.every(s => s.iso.length > 0))
@@ -290,4 +290,43 @@ test('foldOutcome: pane hidden after the toggle means it folded', () => {
 
 test('foldOutcome: pane still visible means the toggle hit another column, so undo it', () => {
   assert.equal(plugin.foldOutcome(true, true), 'undo')
+})
+
+test('errorMessage reads a FastAPI detail out of the transport error', () => {
+  assert.equal(
+    plugin.errorMessage(new Error('502: {"detail":"kanban card t_1 did not accept the answer"}')),
+    'kanban card t_1 did not accept the answer',
+  )
+  assert.equal(plugin.errorMessage(new Error('500: boom')), 'boom')
+  assert.equal(plugin.errorMessage(new Error('404: ')), 'Request failed (404)')
+  assert.equal(plugin.errorMessage(new Error('Hermes desktop bridge unavailable')), 'Hermes desktop bridge unavailable')
+  assert.equal(plugin.errorMessage(null), 'Request failed')
+})
+
+test('questionsFirst puts open questions above tasks and keeps order within each group', () => {
+  const pins = [
+    { id: 't1', status: 'open', kind: 'task' },
+    { id: 'q1', status: 'open', kind: 'yes_no' },
+    { id: 't2', status: 'open', kind: 'task' },
+    { id: 'q2', status: 'open', kind: 'text' },
+    { id: 'd1', status: 'done', kind: 'yes_no' },
+  ]
+  assert.deepEqual(plugin.questionsFirst(pins).map(p => p.id), ['q1', 'q2', 't1', 't2', 'd1'])
+  assert.deepEqual(plugin.questionsFirst(null), [])
+})
+
+test('checkStatus explains why an open check has not cleared', () => {
+  const pin = { status: 'open', check_kind: 'dns_ns', last_check_result: 'no NS records', last_checked_at: NOW - 7200 }
+  assert.equal(plugin.checkStatus(pin, NOW), 'Check: no NS records · 2 hours ago')
+  assert.equal(plugin.checkStatus({ ...pin, last_checked_at: null }, NOW), 'Check: no NS records')
+  assert.equal(plugin.checkStatus({ ...pin, last_check_result: null }, NOW), null)
+  assert.equal(plugin.checkStatus({ ...pin, status: 'done' }, NOW), null)
+  assert.equal(plugin.checkStatus({ status: 'open' }, NOW), null)
+})
+
+test('emptyText gives each tab its own copy', () => {
+  assert.match(plugin.emptyText('open'), /Nothing waiting on you/)
+  assert.equal(plugin.emptyText('done'), 'Nothing done yet.')
+  assert.equal(plugin.emptyText('dismissed'), 'Nothing dismissed.')
+  assert.equal(plugin.emptyText('all'), 'No pins yet.')
 })

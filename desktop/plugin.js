@@ -93,7 +93,7 @@ function answerValue(pin) {
 }
 
 // The single card meta line as `{label, ago, iso}` segments: `Pinned` always;
-// then `Acknowledged`/`Dismissed` when closed; then `Answered` when answered.
+// then `Done`/`Dismissed` when closed; then `Answered` when answered.
 // `iso` is the hover tooltip — the absolute local time for time segments, or
 // the full untruncated text for a truncated text answer (else null).
 export function metaLine(pin, now = Date.now() / 1000) {
@@ -103,7 +103,7 @@ export function metaLine(pin, now = Date.now() / 1000) {
   if (pin.status === 'done' || pin.status === 'dismissed') {
     const closed = pin.closed_at || pin.done_at || pin.answered_at
     segments.push({
-      label: pin.status === 'done' ? 'Acknowledged' : 'Dismissed',
+      label: pin.status === 'done' ? 'Done' : 'Dismissed',
       ago: timeAgo(closed, now),
       iso: isoTime(closed),
     })
@@ -120,6 +120,40 @@ export function metaLine(pin, now = Date.now() / 1000) {
   }
 
   return segments
+}
+
+// The readable reason behind a failed `ctx.rest` call. The desktop transport throws
+// `Error("<status>: <body>")`; a FastAPI body is `{"detail": "..."}`.
+export function errorMessage(err) {
+  const raw = String(err?.message ?? err ?? '').trim()
+  const m = /^(\d{3}):\s*([\s\S]*)$/.exec(raw)
+  const body = m ? m[2].trim() : raw
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed && typeof parsed.detail === 'string' && parsed.detail) return parsed.detail
+  } catch (_e) {
+    // not JSON: fall through to the raw text
+  }
+  if (body) return body.length > 200 ? `${body.slice(0, 200)}…` : body
+  return m ? `Request failed (${m[1]})` : 'Request failed'
+}
+
+// Open pins that wait on an answer (yes/no, choice, text) come before plain tasks —
+// they are what keeps an agent blocked. Order inside each group is preserved.
+export function questionsFirst(pins) {
+  const list = Array.isArray(pins) ? pins : []
+  const isQuestion = (p) => p?.status === 'open' && p?.kind && p.kind !== 'task'
+  return [...list.filter(isQuestion), ...list.filter((p) => !isQuestion(p))]
+}
+
+// Why an auto-clearing check has not cleared yet, e.g. "Check: no NS records · 2 hours ago".
+// Null for pins without a check, pins never checked, or closed pins.
+export function checkStatus(pin, now = Date.now() / 1000) {
+  if (!pin?.check_kind || pin.status !== 'open') return null
+  const result = String(pin.last_check_result ?? '').trim()
+  if (!result) return null
+  const ago = timeAgo(pin.last_checked_at, now)
+  return ago ? `Check: ${result} · ${ago}` : `Check: ${result}`
 }
 
 // Decide where closing the corkboard page should land: back into the active
@@ -309,8 +343,8 @@ function writeStorage(ctx, key, value) {
 
 function btn(primary) {
   return primary
-    ? 'rounded px-2 py-1 text-xs font-medium bg-(--ui-accent) text-(--ui-accent-fg)'
-    : 'rounded px-2 py-1 text-xs border border-(--ui-border) text-(--ui-text-secondary) hover:bg-(--ui-surface)'
+    ? 'rounded px-2 py-1 text-xs font-medium bg-(--ui-accent) text-(--ui-accent-fg) disabled:opacity-50'
+    : 'rounded px-2 py-1 text-xs border border-(--ui-border) text-(--ui-text-secondary) hover:bg-(--ui-surface) disabled:opacity-50'
 }
 
 function inputCls() {
@@ -319,7 +353,7 @@ function inputCls() {
 
 const STATUSES = [
   ['open', 'Open'],
-  ['done', 'Acknowledged'],
+  ['done', 'Done'],
   ['dismissed', 'Dismissed'],
   ['all', 'All'],
 ]
@@ -329,14 +363,17 @@ const avatarCache = new Map() // profileName -> { data: string|null, settled: bo
 function usePins(ctx, status = 'open', sort = 'newest') {
   const [pins, setPins] = useState([])
   const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState(null)
 
   const reload = useCallback(async () => {
     try {
-      const data = await ctx.rest('/pins?status=&sort=')
+      const data = await ctx.rest('/pins?status=all&sort=newest')
       const list = Array.isArray(data) ? data : (data && data.pins) || []
-      setPins(sortPins(filterPins(list, status), sort))
-    } catch (_err) {
-      setPins([])
+      setPins(questionsFirst(sortPins(filterPins(list, status), sort)))
+      setError(null)
+    } catch (err) {
+      // Keep the last good list on screen and say the board is stale, not "empty".
+      setError(errorMessage(err))
     } finally {
       setLoaded(true)
     }
@@ -360,7 +397,7 @@ function usePins(ctx, status = 'open', sort = 'newest') {
     }
   }, [ctx, reload])
 
-  return { pins, loaded, reload }
+  return { pins, loaded, error, reload }
 }
 
 function useProfiles() {
@@ -457,95 +494,97 @@ async function openOrigin(pin) {
 }
 
 // -- answer / controls ---------------------------------------------------------
+//
+// Every control receives `act(path, body?)` and `busy` from its card. `act` posts to the
+// plugin backend, disables the card's buttons while the request is in flight (no double
+// sends), and shows the failure on the card instead of swallowing it. It resolves true on
+// success so a control can clear its input only when the answer actually landed.
 
-function TaskControls({ ctx, pin, onChanged }) {
-  const done = async () => {
-    await ctx.rest(`/pins/${pin.id}/done`, { method: 'POST' })
-    haptic('tap')
-    onChanged()
+const onEnter = (fn) => (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    fn()
   }
-  return jsx('button', { type: 'button', onClick: done, className: btn(true), children: 'Done' })
 }
 
-function YesNoAnswer({ ctx, pin, onChanged }) {
+function TaskControls({ act, busy }) {
+  return jsx('button', {
+    type: 'button', disabled: busy, onClick: () => act('done'), className: btn(true), children: 'Done',
+  })
+}
+
+function YesNoAnswer({ act, busy }) {
   const [note, setNote] = useState('')
   const send = (value) => async () => {
-    await ctx.rest(`/pins/${pin.id}/answer`, { method: 'POST', body: { answer: value, note: note || null } })
-    haptic('tap')
-    setNote('')
-    onChanged()
+    if (await act('answer', { answer: value, note: note.trim() || null })) setNote('')
   }
   return jsxs('div', { className: 'flex flex-wrap items-center gap-1.5', children: [
-    jsx('button', { type: 'button', onClick: send('yes'), className: btn(true), children: 'Yes' }),
-    jsx('button', { type: 'button', onClick: send('no'), className: btn(false), children: 'No' }),
+    jsx('button', { type: 'button', disabled: busy, onClick: send('yes'), className: btn(true), children: 'Yes' }),
+    jsx('button', { type: 'button', disabled: busy, onClick: send('no'), className: btn(false), children: 'No' }),
     jsx('input', {
-      type: 'text', value: note, placeholder: 'note (optional)', className: inputCls(),
+      type: 'text', value: note, placeholder: 'Note (optional)', className: inputCls(), disabled: busy,
+      'aria-label': 'Note with your answer',
       onChange: (e) => setNote(e.target.value),
     }),
   ] })
 }
 
-function ChoiceAnswer({ ctx, pin, onChanged }) {
+function ChoiceAnswer({ pin, act, busy }) {
   const [other, setOther] = useState('')
-  const send = (value) => async () => {
-    await ctx.rest(`/pins/${pin.id}/answer`, { method: 'POST', body: { answer: value } })
-    haptic('tap')
-    onChanged()
-  }
+  const send = (value) => () => act('answer', { answer: value })
   const submitOther = async () => {
-    if (!other.trim()) return
-    await ctx.rest(`/pins/${pin.id}/answer`, { method: 'POST', body: { answer: other.trim() } })
-    haptic('tap')
-    setOther('')
-    onChanged()
+    const value = other.trim()
+    if (!value || busy) return
+    if (await act('answer', { answer: value })) setOther('')
   }
   const choices = Array.isArray(pin.choices) ? pin.choices : []
   const buttons = choices.map((choice, i) =>
-    jsx('button', {
-      type: 'button', key: choice, onClick: send(choice), className: btn(i === 0),
-      children: i === 0 ? `Recommended: ${choice}` : choice,
+    jsxs('button', {
+      type: 'button', key: choice, disabled: busy, onClick: send(choice), className: btn(i === 0),
+      title: i === 0 ? 'Recommended' : undefined,
+      children: [
+        choice,
+        i === 0 ? jsx('span', { className: 'ml-1 opacity-70', 'aria-label': '(recommended)', children: '★' }) : null,
+      ],
     })
   )
   return jsxs('div', { className: 'flex flex-col gap-1.5', children: [
     jsxs('div', { className: 'flex flex-wrap gap-1.5', children: buttons }),
     jsxs('div', { className: 'flex gap-1.5', children: [
       jsx('input', {
-        type: 'text', value: other, placeholder: 'Other', className: inputCls(),
+        type: 'text', value: other, placeholder: 'Something else…', className: inputCls(), disabled: busy,
+        'aria-label': 'Answer with something else',
         onChange: (e) => setOther(e.target.value),
+        onKeyDown: onEnter(submitOther),
       }),
-      jsx('button', { type: 'button', onClick: submitOther, className: btn(false), children: 'Send' }),
+      jsx('button', { type: 'button', disabled: busy || !other.trim(), onClick: submitOther, className: btn(false), children: 'Send' }),
     ] }),
   ] })
 }
 
-function TextAnswer({ ctx, pin, onChanged }) {
+function TextAnswer({ pin, act, busy }) {
   const [value, setValue] = useState('')
   const submit = async () => {
-    if (!value.trim()) return
-    await ctx.rest(`/pins/${pin.id}/answer`, { method: 'POST', body: { answer: value.trim() } })
-    haptic('tap')
-    setValue('')
-    onChanged()
+    const text = value.trim()
+    if (!text || busy) return
+    if (await act('answer', { answer: text })) setValue('')
   }
   return jsxs('div', { className: 'flex gap-1.5', children: [
     jsx('input', {
-      type: 'text', value, placeholder: pin.placeholder || 'Answer…', className: inputCls(),
+      type: 'text', value, placeholder: pin.placeholder || 'Answer…', className: inputCls(), disabled: busy,
+      'aria-label': 'Your answer',
       onChange: (e) => setValue(e.target.value),
+      onKeyDown: onEnter(submit),
     }),
-    jsx('button', { type: 'button', onClick: submit, className: btn(true), children: 'Send' }),
+    jsx('button', { type: 'button', disabled: busy || !value.trim(), onClick: submit, className: btn(true), children: 'Send' }),
   ] })
 }
 
-function DismissButton({ ctx, pin, onChanged }) {
-  const dismiss = async () => {
-    await ctx.rest(`/pins/${pin.id}/dismiss`, { method: 'POST' })
-    haptic('tap')
-    onChanged()
-  }
+function LinkButton({ label, onClick, busy }) {
   return jsx('button', {
-    type: 'button', onClick: dismiss,
-    className: 'text-[0.6875rem] text-(--ui-text-tertiary) hover:underline',
-    children: 'dismiss',
+    type: 'button', disabled: busy, onClick,
+    className: 'text-[0.6875rem] text-(--ui-text-tertiary) hover:underline disabled:opacity-50',
+    children: label,
   })
 }
 
@@ -613,12 +652,32 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
   const isOpen = pin.status === 'open'
   const now = Date.now() / 1000
   const resolvedPin = resolvePinOrigin(pin, profiles)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  // One request at a time per card; failures stay on the card until the next attempt.
+  const act = async (verb, body) => {
+    if (busy) return false
+    setBusy(true)
+    setError(null)
+    try {
+      await ctx.rest(`/pins/${pin.id}/${verb}`, body ? { method: 'POST', body } : { method: 'POST' })
+      haptic('tap')
+      onChanged()
+      return true
+    } catch (err) {
+      setError(errorMessage(err))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const controls = !isOpen ? null
-    : pin.kind === 'yes_no' ? jsx(YesNoAnswer, { ctx, pin, onChanged })
-    : pin.kind === 'choice' ? jsx(ChoiceAnswer, { ctx, pin, onChanged })
-    : pin.kind === 'text' ? jsx(TextAnswer, { ctx, pin, onChanged })
-    : jsx(TaskControls, { ctx, pin, onChanged })
+    : pin.kind === 'yes_no' ? jsx(YesNoAnswer, { pin, act, busy })
+    : pin.kind === 'choice' ? jsx(ChoiceAnswer, { pin, act, busy })
+    : pin.kind === 'text' ? jsx(TextAnswer, { pin, act, busy })
+    : jsx(TaskControls, { pin, act, busy })
 
   const titleText = plainText(pin.title)
   const url = linkTarget(pin.link)
@@ -636,8 +695,10 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
     jsx(OriginOpenButton, { pin: resolvedPin }),
   ].filter(Boolean) })
 
+  const small = 'text-[0.6875rem] text-(--ui-text-tertiary)'
+
   const where = pin.link && !url
-    ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `where: ${plainText(pin.link)}` })
+    ? jsx('div', { className: small, children: `Where: ${plainText(pin.link)}` })
     : null
 
   const question = pin.question
@@ -645,16 +706,25 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
     : null
 
   const unblocks = pin.unblocks
-    ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `unblocks: ${pin.unblocks}` })
+    ? jsx('div', { className: small, children: `Unblocks: ${pin.unblocks}` })
     : null
 
-  const meta = (question || unblocks)
-    ? jsxs('div', { className: 'flex flex-col gap-0.5', children: [question, unblocks].filter(Boolean) })
+  const check = checkStatus(pin, now)
+  const checkLine = check
+    ? jsx('div', { className: small, title: isoTime(pin.last_checked_at) || undefined, children: check })
+    : null
+
+  const note = !isOpen && pin.answer_note
+    ? jsx('div', { className: small, children: `Note: ${pin.answer_note}` })
+    : null
+
+  const meta = (question || unblocks || checkLine || note)
+    ? jsxs('div', { className: 'flex flex-col gap-0.5', children: [question, unblocks, checkLine, note].filter(Boolean) })
     : null
 
   const stamps = metaLine(pin, now)
   const ageLine = jsx('div', {
-    className: 'flex flex-wrap items-center gap-x-1 text-[0.6875rem] text-(--ui-text-tertiary)',
+    className: `flex flex-wrap items-center gap-x-1 ${small}`,
     children: stamps.map((seg, i) => jsxs('span', {
       key: i,
       children: [
@@ -668,10 +738,16 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
   })
 
   const actions = isOpen
-    ? jsxs('div', { className: 'flex items-center gap-2', children: [
+    ? jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
         controls,
-        jsx(DismissButton, { ctx, pin, onChanged }),
+        jsx(LinkButton, { label: 'Dismiss', busy, onClick: () => act('dismiss') }),
       ].filter(Boolean) })
+    : pin.status === 'dismissed'
+      ? jsx('div', { children: jsx(LinkButton, { label: 'Reopen', busy, onClick: () => act('reopen') }) })
+      : null
+
+  const errorLine = error
+    ? jsx('div', { role: 'alert', className: 'text-[0.6875rem] text-(--ui-red)', children: error })
     : null
 
   const border = borderColor(resolvedPin, prefs, profileColor)
@@ -679,6 +755,7 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
   return jsxs('div', {
     className: 'rounded border p-2 flex flex-col gap-1.5',
     style: { borderColor: border },
+    'aria-busy': busy || undefined,
     children: [
       title,
       origin,
@@ -686,6 +763,7 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
       meta,
       ageLine,
       actions,
+      errorLine,
     ].filter(Boolean),
   })
 }
@@ -712,10 +790,18 @@ function FilterBar({ status, onStatus, sort, onSort }) {
   ] })
 }
 
+// What an empty tab says: direction, not mood.
+export function emptyText(status) {
+  if (status === 'open') return 'Nothing waiting on you. Agents pin things here when only you can do them.'
+  if (status === 'done') return 'Nothing done yet.'
+  if (status === 'dismissed') return 'Nothing dismissed.'
+  return 'No pins yet.'
+}
+
 function PinList({ ctx }) {
   const [status, setStatus] = useState('open')
   const [sort, setSort] = useState('newest')
-  const { pins, loaded, reload } = usePins(ctx, status, sort)
+  const { pins, loaded, error, reload } = usePins(ctx, status, sort)
   const profiles = useProfiles()
   const prefs = useValue($prefs)
 
@@ -724,17 +810,28 @@ function PinList({ ctx }) {
   }
 
   const label = status === 'open' ? 'open'
-    : status === 'done' ? 'acknowledged'
+    : status === 'done' ? 'done'
     : status === 'dismissed' ? 'dismissed'
     : 'pins'
 
+  const banner = error
+    ? jsxs('div', { role: 'alert', className: 'mx-3 flex items-center gap-2 rounded border border-(--ui-border) px-2 py-1 text-[0.6875rem] text-(--ui-red)', children: [
+        jsx('span', { className: 'min-w-0 flex-1', children: `Couldn't load the board: ${error}` }),
+        jsx('button', { type: 'button', onClick: reload, className: btn(false), children: 'Retry' }),
+      ] })
+    : null
+
+  // A failed first load has nothing true to show; say so instead of "empty".
+  const body = pins.length === 0
+    ? (error ? null : jsx('div', { className: 'px-3 text-xs text-(--ui-text-tertiary)', children: emptyText(status) }))
+    : jsxs('div', { className: 'flex flex-col gap-2 px-3 pb-3', children: pins.map((pin) => jsx(PinRow, { ctx, pin, onChanged: reload, key: pin.id, profiles, prefs })) })
+
   return jsxs('div', { className: 'flex flex-col gap-2', children: [
     jsx(FilterBar, { status, onStatus: setStatus, sort, onSort: setSort }),
+    banner,
     jsx('div', { className: 'px-3 text-[0.6875rem] text-(--ui-text-tertiary)', children: `${pins.length} ${label}` }),
-    pins.length === 0
-      ? jsx('div', { className: 'px-3 text-xs text-(--ui-text-tertiary)', children: 'Corkboard is empty.' })
-      : jsxs('div', { className: 'flex flex-col gap-2 px-3 pb-3', children: pins.map((pin) => jsx(PinRow, { ctx, pin, onChanged: reload, key: pin.id, profiles, prefs })) }),
-  ] })
+    body,
+  ].filter(Boolean) })
 }
 
 function closeCorkboardPage() {

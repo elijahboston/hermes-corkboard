@@ -56,6 +56,17 @@ def test_dismiss(store):
     assert r.json()["status"] == "dismissed"
 
 
+def test_reopen_undoes_dismiss(store):
+    row = store.pin("File LLC")
+    client = _client()
+    client.post(f"/pins/{row['id']}/dismiss")
+    r = client.post(f"/pins/{row['id']}/reopen")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "open"
+    assert body["closed_at"] is None
+
+
 def test_answer(store):
     row = store.pin("q", kind="yes_no", question="ship?")
     r = _client().post(f"/pins/{row['id']}/answer", json={"answer": "yes", "note": "go"})

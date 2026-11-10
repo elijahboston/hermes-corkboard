@@ -244,6 +244,14 @@ def dismiss(store: Any, pin_id: Optional[str]) -> dict[str, Any]:
     return store.get(row["id"])
 
 
+def reopen(store: Any, pin_id: Optional[str]) -> dict[str, Any]:
+    """Put a dismissed (or done) pin back on the open board — the undo for a mis-click."""
+    row = _require(store, pin_id)
+    store.mark(row["id"], "open")
+    notify_changed(row["id"], "open")
+    return store.get(row["id"])
+
+
 def answer(store: Any, pin_id: Optional[str], answer_text: str, note: Optional[str] = None) -> dict[str, Any]:
     row = _require(store, pin_id)
     answer_text = (answer_text or "").strip()

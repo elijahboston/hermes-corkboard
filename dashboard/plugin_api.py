@@ -66,6 +66,12 @@ def dismiss(pin_id: str) -> dict[str, Any]:
     return actions.dismiss(_store(), row["id"])
 
 
+@router.post("/pins/{pin_id}/reopen")
+def reopen(pin_id: str) -> dict[str, Any]:
+    row = _require(pin_id)
+    return actions.reopen(_store(), row["id"])
+
+
 class AnswerBody(BaseModel):
     answer: str
     note: Optional[str] = None
