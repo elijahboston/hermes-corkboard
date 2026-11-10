@@ -420,16 +420,19 @@ def reset_db_seams() -> None:
 
 # -- connection management (lazy; tests inject a temp-path connection) ----------
 _conn: Optional[sqlite3.Connection] = None
+_store: Optional[Store] = None
 
 
 def set_connection(conn: sqlite3.Connection) -> None:
-    global _conn
+    global _conn, _store
     _conn = conn
+    _store = None
 
 
 def reset_connection() -> None:
-    global _conn
+    global _conn, _store
     _conn = None
+    _store = None
 
 
 def get_connection() -> sqlite3.Connection:
@@ -444,4 +447,10 @@ def get_connection() -> sqlite3.Connection:
 
 
 def get_store() -> Store:
-    return Store(get_connection())
+    """The shared Store for the current connection. Schema creation and migration run once
+    per connection, not on every tool call or API request."""
+    global _store
+    conn = get_connection()
+    if _store is None or _store.conn is not conn:
+        _store = Store(conn)
+    return _store

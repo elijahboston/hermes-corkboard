@@ -89,3 +89,20 @@ def test_record_check_fail_stays_open(store):
     r = store.get(a["id"])
     assert r["status"] == "open"
     assert r["last_checked_at"] is not None
+
+
+def test_get_store_reuses_one_store_per_connection(tmp_path):
+    import sqlite3
+
+    from hermes_plugins.corkboard import store as store_mod
+
+    conn = sqlite3.connect(tmp_path / "s.db", check_same_thread=False)
+    try:
+        store_mod.set_connection(conn)
+        first = store_mod.get_store()
+        assert store_mod.get_store() is first
+        store_mod.set_connection(sqlite3.connect(tmp_path / "t.db", check_same_thread=False))
+        assert store_mod.get_store() is not first
+    finally:
+        store_mod.reset_connection()
+        conn.close()

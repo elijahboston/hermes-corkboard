@@ -78,3 +78,11 @@ def test_import_placeholder_without_domains_is_checkless(tmp_path, store):
     assert pin["title"] == "Point nameservers"
     assert pin["check_kind"] is None
     assert pin["check_arg"] is None
+
+
+def test_import_ns_suffix_is_configurable(tmp_path, store):
+    path = tmp_path / "corkboard.md"
+    path.write_text(FIXTURE)
+    actions.import_markdown(store, path, ns_suffix="ns.example.net")
+    dns = {r["title"]: r for r in store.list_pins()}["Point nameservers at Cloudflare"]
+    assert dns["check_arg"] == "example.com=ns.example.net"

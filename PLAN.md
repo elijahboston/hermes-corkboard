@@ -8,7 +8,7 @@
 
 **Tech stack:** Python, Hermes `PluginContext` (`register_tool`, `register_cli_command`, `register_command`, `register_hook`), `plugins/plugin_storage.plugin_db`, `cronjob` for periodic checks.
 
-**Interim:** until this ships, a markdown note (e.g. `~/notes/Owner Corkboard.md`) is the board. Import it on first run (Task 9).
+**Interim:** until this ships, a markdown note (e.g. `owner-corkboard.md`) is the board. Import it on first run (Task 9).
 
 ---
 
@@ -60,7 +60,7 @@ profile desktop pane: worker and default profile were previously writing to two 
 | CLI `hermes corkboard` | `list` (default), `done <id>`, `dismiss <id>`, `add "<title>" [--link] [--check-dns d=ns]`, `check` (run all checks now), `import <md>` |
 | Slash `/corkboard` | same `list` view inside chat/desktop/Telegram |
 | Hook `on_kanban_dispatch_tick` | scan the board for tasks in `blocked` with kind `needs_input`/`capability`; pin each (dedupe by task id); mark the pin done when the task leaves `blocked` |
-| Cron (optional) | `hermes corkboard check` every hour + a morning digest to Telegram. The owner sets this up himself (user preference); the plugin README gives the command. |
+| Cron (optional) | `hermes corkboard check` every hour + a morning digest to Telegram. The owner sets this up themselves (user preference); the plugin README gives the command. |
 
 ### Pin kinds and owner responses
 
@@ -80,7 +80,7 @@ Schema additions to `pins`: `kind TEXT NOT NULL DEFAULT 'task'`, `question TEXT`
 - `reply_to = session:…` → store the answer and `broadcast_plugin_event("corkboard", "pin.answered", …)`; the tool's `list`/`get` action lets the asking agent read answered pins on its next run.
 - Every answer moves the pin to Done with answer + timestamp kept (decision history). The CLI and `/corkboard` can answer too: `hermes corkboard answer <id> yes|no|"<text>"`.
 
-**Secrets rule (hard):** a `text` pin may never collect credentials. The tool refuses to create one whose question matches key/token/password/secret/card/CVC/API-key patterns, and the answer path runs the same token-shape guard as Task 3 (reject and tell the owner to use the vault / `alchemy login` instead). Credential needs are always `task` pins that name the command the owner runs himself.
+**Secrets rule (hard):** a `text` pin may never collect credentials. The tool refuses to create one whose question matches key/token/password/secret/card/CVC/API-key patterns, and the answer path runs the same token-shape guard as Task 3 (reject and point the owner at a secrets manager). Credential needs are always `task` pins that name the command the owner runs themselves.
 
 Add tasks: 16 schema + kinds in store/tool; 17 answer routing (kanban comment + session event) with tests; 18 desktop controls per kind (buttons, choice list + Other, text box); 19 CLI `answer` + secret guard tests on question and answer.
 
@@ -133,7 +133,7 @@ A passing check sets `status=done`, `done_at`, and records `last_check_result`. 
 6. **Kanban auto-pin**: hook on `on_kanban_dispatch_tick`; first confirm with a temp board that a block→tick shows the task (and record what fires). Test: block a task → pin exists; unblock → pin done.
 7. **Checks** `checks.py`: `dns_ns`, `command`, `kanban_unblocked`, each with a test (dns via a stubbed resolver function, not the network).
 8. **Slash command** `/corkboard` returning the same list text.
-9. **Import** `hermes corkboard import ~/notes/Owner\ Corkboard.md`: parse the Open table rows into pins (dns checks inferred from the Check column when it is a `dig` line).
+9. **Import** `hermes corkboard import ./owner-corkboard.md`: parse the Open table rows into pins (dns checks inferred from the Check column when it is a `dig` line).
 10. **Docs**: README with install, the hourly-check cron command, and the agent rule "pin owner-only work instead of writing it in chat".
 11. **Skill line**: add one rule to the `knowledge-capture` (or kanban) skill: "owner-only work → `corkboard pin`".
 

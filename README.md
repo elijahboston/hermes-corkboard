@@ -106,7 +106,8 @@ hermes corkboard dismiss <id>
 hermes corkboard answer <id> yes|no|"free text"
 hermes corkboard check              # run every open check now
 hermes corkboard purge [--dry-run]  # delete closed pins past the retention window
-hermes corkboard import ~/notes/Owner\ Corkboard.md
+hermes corkboard import ./owner-corkboard.md                 # dig NS checks wait for ns.cloudflare.com
+hermes corkboard import ./owner-corkboard.md --ns-suffix ns.example.net
 ```
 
 `<id>` may be the full uuid or a unique prefix. The slash command takes the same status
@@ -126,7 +127,7 @@ hermes config set plugins.entries.corkboard.settings.retention_days 14
 
 ## Periodic checks (add yourself)
 
-The plugin creates no cron of its own. To auto-clear checks, the owner adds one himself:
+The plugin creates no cron of its own. To auto-clear checks, the owner adds one themselves:
 
 ```bash
 hermes cron add "corkboard-check" --schedule "0 * * * *" -- hermes corkboard check
@@ -149,8 +150,8 @@ No credentials in any pin. The tool refuses:
 - values that look like tokens (long base64/hex, `sk-`, `ghp_`, `github_pat_`, AWS keys, …), and
 - `text` pins whose question asks for keys / tokens / passwords / cards / CVC / API keys.
 
-Credential needs are **`task` pins** that name the command the owner runs himself (the vault or
-`alchemy login`), never a text box waiting for a secret.
+Credential needs are **`task` pins** that name the command the owner runs themselves (a secrets manager or the
+tool's own login command), never a text box waiting for a secret.
 
 ## Kanban auto-pin
 

@@ -12,9 +12,11 @@ import subprocess
 import sys
 from typing import Any, Optional
 
-from . import actions, checks, guard, store as store_mod
+import logging
 
-logger = __import__("logging").getLogger(__name__)
+from . import actions, guard, store as store_mod
+
+logger = logging.getLogger(__name__)
 
 _RETENTION_DEFAULT = 30
 
@@ -209,6 +211,10 @@ def _setup_argparse(subparser: Any) -> None:
 
     p_import = subs.add_parser("import", help="Import a markdown corkboard table")
     p_import.add_argument("path")
+    p_import.add_argument(
+        "--ns-suffix", dest="ns_suffix", default=actions.DEFAULT_NS_SUFFIX,
+        help="Nameserver suffix a `dig +short NS` check waits for (default: %(default)s)",
+    )
 
     subparser.set_defaults(func=_cli_handler)
 
@@ -271,7 +277,9 @@ def _cli_handler(args: Any, retention_days: int = _RETENTION_DEFAULT) -> int:
             for pid, kind, ok, detail in results:
                 print(f"{pid[:8]} {kind}: {'PASS' if ok else 'fail'} {detail}")
         elif cmd == "import":
-            rows = actions.import_markdown(store, args.path)
+            rows = actions.import_markdown(
+                store, args.path, ns_suffix=getattr(args, "ns_suffix", None) or actions.DEFAULT_NS_SUFFIX
+            )
             print(f"imported {len(rows)} pins")
         else:
             print(f"unknown corkboard subcommand {cmd!r}", file=sys.stderr)

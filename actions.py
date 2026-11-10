@@ -11,15 +11,14 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from . import checks, guard
-
-KINDS = ("task", "yes_no", "choice", "text")
+from .store import KINDS
 # Agents may never create `command` checks — arbitrary shell is owner-only via the CLI.
 AGENT_CHECK_KINDS = ("dns_ns", "kanban_unblocked")
 
-_NS_SUFFIX = "ns.cloudflare.com"
+DEFAULT_NS_SUFFIX = "ns.cloudflare.com"
 _DIG_NS_RE = re.compile(r"dig\s+\+short\s+NS\s+(\S+)", re.IGNORECASE)
 _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 
@@ -30,7 +29,7 @@ def time_ago(seconds: Any, now: Optional[float] = None) -> str:
         secs = float(seconds)
     except (TypeError, ValueError):
         return ""
-    if secs is None or secs <= 0:
+    if secs <= 0:
         return ""
     now = time.time() if now is None else now
     diff = max(0, int(now - secs))
@@ -62,9 +61,7 @@ def _strip_bold(text: str) -> str:
 
 def _is_domain(token: str) -> bool:
     token = (token or "").strip().rstrip(".")
-    if not token or any(c in token for c in " <>/@:\\") or "/" in token:
-        return False
-    if token.startswith(("http://", "https://")):
+    if not token or any(c in token for c in " <>/@:\\"):
         return False
     return "." in token
 
@@ -190,9 +187,9 @@ def pin(
     if check_kind:
         allowed = tuple(AGENT_CHECK_KINDS) + (("command",) if allow_command else ())
         if check_kind not in allowed:
+            if check_kind == "command":
+                raise ValueError("command checks are owner-only (CLI)")
             raise ValueError(f"check_kind {check_kind!r} not allowed here")
-        if check_kind == "command" and not allow_command:
-            raise ValueError("command checks are owner-only (CLI)")
 
     row = store.pin(
         title=title,
@@ -278,11 +275,11 @@ def run_checks(store: Any) -> list[tuple[str, str, bool, str]]:
 
 
 # -- import --------------------------------------------------------------------
-def import_markdown(store: Any, path: str | Path) -> list[dict[str, Any]]:
+def import_markdown(store: Any, path: str | Path, ns_suffix: str = DEFAULT_NS_SUFFIX) -> list[dict[str, Any]]:
     """Parse the ``| Pinned | Task | Where | Check | Unblocks |`` table into pins.
 
-    A Check cell containing ``dig +short NS <domain>`` becomes a ``dns_ns`` check with
-    suffix ``ns.cloudflare.com``.
+    A Check cell containing ``dig +short NS <domain>`` becomes a ``dns_ns`` check that passes
+    once every nameserver ends with ``ns_suffix``.
     """
     text = Path(path).read_text(encoding="utf-8-sig")
     header: Optional[list[str]] = None
@@ -328,7 +325,7 @@ def import_markdown(store: Any, path: str | Path) -> list[dict[str, Any]]:
                         link=link,
                         unblocks=unblocks,
                         check_kind="dns_ns",
-                        check_arg=f"{domain}={_NS_SUFFIX}",
+                        check_arg=f"{domain}={ns_suffix}",
                         source="manual",
                         origin_kind="import",
                         dedupe_key=f"import:{plain_title.lower()} — {domain.lower()}",
@@ -339,7 +336,7 @@ def import_markdown(store: Any, path: str | Path) -> list[dict[str, Any]]:
         check_kind: Optional[str] = None
         check_arg: Optional[str] = None
         if m and not is_placeholder and raw_domain and _is_domain(raw_domain):
-            check_kind, check_arg = "dns_ns", f"{raw_domain}={_NS_SUFFIX}"
+            check_kind, check_arg = "dns_ns", f"{raw_domain}={ns_suffix}"
 
         imported.append(
             pin(

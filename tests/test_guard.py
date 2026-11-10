@@ -10,16 +10,25 @@ from hermes_plugins.corkboard import guard
     "ghp_" + "A" * 20,
     "github_pat_" + "A" * 24,
     "AKIA" + "0" * 16 + "ABCD",
-    "A" * 40,
-    "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c",
+    "wJalrXUtnFEMI7K7MDENGbPxRfiCYEXAMPLEKEY0a9",
+    "key: dGhpcyBpcyBhIHZlcnkgc2VjcmV0IGtleSB2YWx1ZQ==",
 ])
 def test_looks_like_token(value):
     assert guard.looks_like_token(value)
 
 
-def test_plain_text_is_not_token():
-    assert not guard.looks_like_token("File the LLC before Friday")
-    assert not guard.looks_like_token("example.com")
+@pytest.mark.parametrize("value", [
+    "File the LLC before Friday",
+    "example.com",
+    # git commit ids and checksums are not secrets
+    "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c",
+    "github.com/example/repo/commit/" + "0123abcd" * 5,
+    # long URL paths are not secrets
+    "https://github.com/example/repository/settings/branches/rules",
+    "https://example.com/docs/AnExtremelyLongPageNameWithManyWords2026Edition",
+])
+def test_not_token(value):
+    assert not guard.looks_like_token(value)
 
 
 def test_assert_not_token_rejects():
