@@ -312,6 +312,7 @@ def _mark_done_by_dedupe(store: Any, dedupe_key: str) -> None:
     for row in store.find_by_dedupe(dedupe_key):
         if row["status"] != store_mod.DONE:
             store.mark(row["id"], store_mod.DONE)
+            actions.notify_changed(row["id"], store_mod.DONE)
 
 
 def _on_blocked(**kwargs: Any) -> None:
@@ -373,6 +374,7 @@ def _on_tick(retention_days: int = _RETENTION_DEFAULT, **kwargs: Any) -> None:
             continue
         if task not in blocked:
             store.mark(pin["id"], store_mod.DONE)
+            actions.notify_changed(pin["id"], store_mod.DONE)
 
 
 # -- registration --------------------------------------------------------------

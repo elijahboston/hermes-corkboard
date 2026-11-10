@@ -26,6 +26,7 @@ import {
 } from '@hermes/plugin-sdk'
 
 const PIN_CHANGED = 'plugin.corkboard.pins.changed'
+const POLL_MS = 60_000
 
 // -- pure helpers (exported so `tests/links.test.mjs` can exercise them) --------
 
@@ -344,6 +345,20 @@ function usePins(ctx, status = 'open', sort = 'newest') {
   useEffect(() => { reload() }, [reload])
 
   useEffect(() => ctx.onEvent(PIN_CHANGED, () => reload()), [ctx, reload])
+
+  // The event only reaches us for writes made inside the gateway. Pins from the CLI,
+  // the kanban dispatcher or another profile's process land silently, so also refetch
+  // on a slow timer and whenever the window regains focus.
+  useEffect(() => {
+    const timer = setInterval(() => reload(), POLL_MS)
+    const offFocus = typeof ctx.addEventListener === 'function'
+      ? ctx.addEventListener(window, 'focus', () => reload())
+      : null
+    return () => {
+      clearInterval(timer)
+      if (typeof offFocus === 'function') offFocus()
+    }
+  }, [ctx, reload])
 
   return { pins, loaded, reload }
 }

@@ -1,7 +1,8 @@
 """Corkboard dashboard plugin backend, mounted at /api/plugins/corkboard/.
 
 Runs inside the gateway process; the desktop half reaches it through ``ctx.rest``. Every
-mutation broadcasts ``plugin.corkboard.pins.changed`` so open panes/pages refetch.
+mutation goes through ``actions``, which broadcasts ``plugin.corkboard.pins.changed`` so open
+panes/pages refetch.
 
 Handlers are plain ``def`` on purpose: they do blocking SQLite and subprocess work, so
 FastAPI runs them in its threadpool instead of on the event loop.
@@ -56,21 +57,13 @@ def list_pins(status: str = "open", sort: str = "newest") -> list[dict[str, Any]
 @router.post("/pins/{pin_id}/done")
 def done(pin_id: str) -> dict[str, Any]:
     row = _require(pin_id)
-    store = _store()
-    store.mark(row["id"], "done")
-    updated = store.get(row["id"])
-    actions.broadcast_pin_event("pins.changed", {"id": row["id"], "status": "done"})
-    return updated
+    return actions.done(_store(), row["id"])
 
 
 @router.post("/pins/{pin_id}/dismiss")
 def dismiss(pin_id: str) -> dict[str, Any]:
     row = _require(pin_id)
-    store = _store()
-    store.mark(row["id"], "dismissed")
-    updated = store.get(row["id"])
-    actions.broadcast_pin_event("pins.changed", {"id": row["id"], "status": "dismissed"})
-    return updated
+    return actions.dismiss(_store(), row["id"])
 
 
 class AnswerBody(BaseModel):
@@ -88,5 +81,4 @@ def answer(pin_id: str, body: AnswerBody) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    actions.broadcast_pin_event("pins.changed", {"id": updated["id"], "status": "done"})
     return updated

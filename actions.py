@@ -111,6 +111,23 @@ def broadcast_pin_event(event: str, payload: dict[str, Any]) -> None:
     broadcast_plugin_event("corkboard", event, payload)
 
 
+def notify_changed(pin_id: Optional[str] = None, status: Optional[str] = None) -> None:
+    """Tell open desktop panes to refetch. Best-effort: a pin write never fails for it.
+
+    Only reaches clients of the process the caller runs in; writes from other processes
+    (CLI, kanban dispatcher, worker profiles) are picked up by the desktop's poll.
+    """
+    payload: dict[str, Any] = {}
+    if pin_id:
+        payload["id"] = pin_id
+    if status:
+        payload["status"] = status
+    try:
+        broadcast_pin_event("pins.changed", payload)
+    except Exception:
+        pass
+
+
 def parse_kanban_ref(ref: str) -> tuple[Optional[str], str]:
     """``kanban:<board>/<task>`` -> ``(board, task)``; board is None when absent."""
     rest = (ref or "")[len("kanban:"):] if (ref or "").startswith("kanban:") else (ref or "")
@@ -177,7 +194,7 @@ def pin(
         if check_kind == "command" and not allow_command:
             raise ValueError("command checks are owner-only (CLI)")
 
-    return store.pin(
+    row = store.pin(
         title=title,
         link=link,
         unblocks=unblocks,
@@ -195,6 +212,8 @@ def pin(
         origin_session_id=origin_session_id,
         origin_platform=origin_platform,
     )
+    notify_changed(row["id"], row["status"])
+    return row
 
 
 def list_pins(store: Any, status: str = "open", sort: str = "newest") -> list[dict[str, Any]]:
@@ -217,12 +236,14 @@ def _require(store: Any, pin_id: Optional[str]) -> dict[str, Any]:
 def done(store: Any, pin_id: Optional[str]) -> dict[str, Any]:
     row = _require(store, pin_id)
     store.mark(row["id"], "done")
+    notify_changed(row["id"], "done")
     return store.get(row["id"])
 
 
 def dismiss(store: Any, pin_id: Optional[str]) -> dict[str, Any]:
     row = _require(store, pin_id)
     store.mark(row["id"], "dismissed")
+    notify_changed(row["id"], "dismissed")
     return store.get(row["id"])
 
 
@@ -245,11 +266,15 @@ def answer(store: Any, pin_id: Optional[str], answer_text: str, note: Optional[s
 
     if reply_to.startswith("session:"):
         broadcast_pin_event("pin.answered", {"id": row["id"], "answer": answer_text, "reply_to": reply_to})
+    notify_changed(row["id"], "done")
     return store.get(row["id"])
 
 
 def run_checks(store: Any) -> list[tuple[str, str, bool, str]]:
-    return checks.run_checks(store)
+    results = checks.run_checks(store)
+    if results:
+        notify_changed()
+    return results
 
 
 # -- import --------------------------------------------------------------------
