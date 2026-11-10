@@ -283,17 +283,29 @@ def _cli_handler(args: Any, retention_days: int = _RETENTION_DEFAULT) -> int:
 
 
 # -- kanban hooks --------------------------------------------------------------
-def _blocked_task_ids(board: str) -> set[str]:
-    """Live blocked task ids for ``board`` (shelled out; monkeypatched in tests)."""
+def _blocked_task_ids(board: str) -> Optional[set[str]]:
+    """Live blocked task ids for ``board`` (shelled out; monkeypatched in tests).
+
+    ``None`` means the lookup failed — distinct from an empty set ("nothing is blocked"),
+    so a failed lookup never clears pins.
+    """
     argv = ["hermes", "kanban", "--board", board, "list", "--status", "blocked", "--json"]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
-        data = json.loads(proc.stdout or "[]")
-    except Exception:
-        return set()
+    except Exception as exc:
+        logger.warning("corkboard: kanban lookup for board %r failed: %s", board, exc)
+        return None
+    if proc.returncode != 0:
+        logger.warning("corkboard: kanban lookup for board %r exited %s", board, proc.returncode)
+        return None
+    try:
+        data = json.loads(proc.stdout or "")
+    except ValueError:
+        logger.warning("corkboard: kanban lookup for board %r returned non-JSON output", board)
+        return None
     if not isinstance(data, list):
-        return set()
-    return {c.get("id") for c in data if isinstance(c, dict) and c.get("id")}
+        return None
+    return {str(c["id"]) for c in data if isinstance(c, dict) and c.get("id")}
 
 
 def _mark_done_by_dedupe(store: Any, dedupe_key: str) -> None:
@@ -352,6 +364,9 @@ def _on_tick(retention_days: int = _RETENTION_DEFAULT, **kwargs: Any) -> None:
     if not kanban_pins:
         return
     blocked = _blocked_task_ids(board)
+    if blocked is None:
+        # Unknown is not "unblocked": keep every pin open until a lookup succeeds.
+        return
     for pin in kanban_pins:
         b, task = actions.parse_kanban_ref(pin.get("source") or "")
         if b != board:
