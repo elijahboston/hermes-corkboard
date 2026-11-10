@@ -2,6 +2,9 @@
 
 Runs inside the gateway process; the desktop half reaches it through ``ctx.rest``. Every
 mutation broadcasts ``plugin.corkboard.pins.changed`` so open panes/pages refetch.
+
+Handlers are plain ``def`` on purpose: they do blocking SQLite and subprocess work, so
+FastAPI runs them in its threadpool instead of on the event loop.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ def _retention_days() -> int:
 
 
 @router.get("/pins")
-async def list_pins(status: str = "open", sort: str = "newest") -> list[dict[str, Any]]:
+def list_pins(status: str = "open", sort: str = "newest") -> list[dict[str, Any]]:
     store = _store()
     store_mod.maybe_purge(store, _retention_days())
     try:
@@ -51,7 +54,7 @@ async def list_pins(status: str = "open", sort: str = "newest") -> list[dict[str
 
 
 @router.post("/pins/{pin_id}/done")
-async def done(pin_id: str) -> dict[str, Any]:
+def done(pin_id: str) -> dict[str, Any]:
     row = _require(pin_id)
     store = _store()
     store.mark(row["id"], "done")
@@ -61,7 +64,7 @@ async def done(pin_id: str) -> dict[str, Any]:
 
 
 @router.post("/pins/{pin_id}/dismiss")
-async def dismiss(pin_id: str) -> dict[str, Any]:
+def dismiss(pin_id: str) -> dict[str, Any]:
     row = _require(pin_id)
     store = _store()
     store.mark(row["id"], "dismissed")
@@ -76,10 +79,13 @@ class AnswerBody(BaseModel):
 
 
 @router.post("/pins/{pin_id}/answer")
-async def answer(pin_id: str, body: AnswerBody) -> dict[str, Any]:
+def answer(pin_id: str, body: AnswerBody) -> dict[str, Any]:
     row = _require(pin_id)
     try:
         updated = actions.answer(_store(), row["id"], body.answer, note=body.note)
+    except actions.DeliveryFailed as exc:
+        # The pin stays open; tell the caller the answer did not reach its destination.
+        raise HTTPException(status_code=502, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     actions.broadcast_pin_event("pins.changed", {"id": updated["id"], "status": "done"})

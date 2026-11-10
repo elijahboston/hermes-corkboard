@@ -98,6 +98,49 @@ def test_answer_routes_to_kanban_comment(registered_ctx, store, monkeypatch):
     assert store.get(pin_id)["status"] == "done"
 
 
+def test_failed_kanban_delivery_keeps_pin_open(registered_ctx, store, monkeypatch):
+    def fail(board, task, answer, note=None):
+        raise actions.DeliveryFailed("card did not accept the answer")
+
+    monkeypatch.setattr(actions, "post_kanban_comment", fail)
+    row = store.pin("q", kind="text", question="Which domain?", reply_to="kanban:core/t_2")
+    try:
+        actions.answer(store, row["id"], "example.com")
+    except actions.DeliveryFailed:
+        pass
+    else:
+        raise AssertionError("expected DeliveryFailed")
+    after = store.get(row["id"])
+    assert after["status"] == "open"
+    assert after["answer"] is None
+
+
+def test_post_kanban_comment_raises_on_failure(monkeypatch):
+    import subprocess
+
+    class Proc:
+        returncode, stdout, stderr = 1, "", "no such task"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Proc())
+    try:
+        actions.post_kanban_comment("core", "t_9", "yes")
+    except actions.DeliveryFailed as exc:
+        assert "no such task" in str(exc)
+    else:
+        raise AssertionError("expected DeliveryFailed")
+
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired("hermes", 30)
+
+    monkeypatch.setattr(subprocess, "run", slow)
+    try:
+        actions.post_kanban_comment("core", "t_9", "yes")
+    except actions.DeliveryFailed as exc:
+        assert "timed out" in str(exc)
+    else:
+        raise AssertionError("expected DeliveryFailed")
+
+
 def test_slash_list(registered_ctx, store):
     handler = registered_ctx.commands["corkboard"]["handler"]
     store.pin("File LLC")

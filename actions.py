@@ -74,15 +74,33 @@ def _bold_domains(title: str) -> list[str]:
 
 
 
+class DeliveryFailed(RuntimeError):
+    """The answer could not be delivered to where the pin routes it; the pin stays open."""
+
+
+_COMMENT_TIMEOUT = 30
+
+
 # -- seams (stubbed in tests) ---------------------------------------------------
 def post_kanban_comment(board: Optional[str], task_id: str, answer: str, note: Optional[str] = None) -> None:
-    """Post an owner answer onto a kanban card via the ``hermes kanban`` CLI (argv list, no shell)."""
+    """Post an owner answer onto a kanban card via the ``hermes kanban`` CLI (argv list, no shell).
+
+    Raises :class:`DeliveryFailed` when the command times out, cannot start, or exits non-zero.
+    """
     text = f"Owner decision: {answer}" + (f" — {note}" if note else "")
     argv = ["hermes", "kanban"]
     if board:
         argv += ["--board", board]
     argv += ["comment", task_id, text]
-    subprocess.run(argv, check=False)
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=_COMMENT_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        raise DeliveryFailed(f"posting to kanban card {task_id} timed out after {_COMMENT_TIMEOUT}s") from None
+    except OSError as exc:
+        raise DeliveryFailed(f"could not run hermes kanban comment: {exc}") from None
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+        raise DeliveryFailed(f"kanban card {task_id} did not accept the answer (exit {proc.returncode}): {detail}")
 
 
 def broadcast_pin_event(event: str, payload: dict[str, Any]) -> None:
@@ -216,13 +234,16 @@ def answer(store: Any, pin_id: Optional[str], answer_text: str, note: Optional[s
     guard.assert_not_token(answer_text, field="answer")
     if note:
         guard.assert_not_token(note, field="note")
-    store.answer(row["id"], answer_text, note)
 
     reply_to = row.get("reply_to") or ""
     if reply_to.startswith("kanban:"):
+        # Deliver first: if the card never hears the answer, the pin must stay open so the
+        # owner sees it and can retry (a raised DeliveryFailed skips the store write).
         board, task = parse_kanban_ref(reply_to)
         post_kanban_comment(board, task, answer_text, note)
-    elif reply_to.startswith("session:"):
+    store.answer(row["id"], answer_text, note)
+
+    if reply_to.startswith("session:"):
         broadcast_pin_event("pin.answered", {"id": row["id"], "answer": answer_text, "reply_to": reply_to})
     return store.get(row["id"])
 

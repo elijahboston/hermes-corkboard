@@ -76,6 +76,20 @@ def test_answer_secret_rejected_400(store):
     assert r.status_code == 400
 
 
+def test_answer_delivery_failure_502_keeps_pin_open(store, monkeypatch):
+    from hermes_plugins.corkboard import actions
+
+    def fail(board, task, answer, note=None):
+        raise actions.DeliveryFailed("card did not accept the answer")
+
+    monkeypatch.setattr(actions, "post_kanban_comment", fail)
+    row = store.pin("q", kind="text", question="which?", reply_to="kanban:core/t_1")
+    r = _client().post(f"/pins/{row['id']}/answer", json={"answer": "example.com"})
+    assert r.status_code == 502
+    assert "did not accept" in r.json()["detail"]
+    assert store.get(row["id"])["status"] == "open"
+
+
 def _set_created(store, pin, ts):
     store.conn.execute("UPDATE pins SET created_at = ? WHERE id = ?", (ts, pin["id"]))
     store.conn.commit()

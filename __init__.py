@@ -167,7 +167,7 @@ def _slash_handler(raw_args: str, retention_days: int = _RETENTION_DEFAULT, **kw
             row = actions.pin(store, title=" ".join(parts[1:]), source="manual", origin_kind="cli")
             return f"pinned {row['id'][:8]} {row['title']}"
         return "usage: /corkboard [open|done|dismissed|all|list|add <title>|done <id>|dismiss <id>|answer <id> <answer>]"
-    except (ValueError, guard.SecretRejected) as exc:
+    except (ValueError, guard.SecretRejected, actions.DeliveryFailed) as exc:
         return f"corkboard: {exc}"
 
 
@@ -277,7 +277,7 @@ def _cli_handler(args: Any, retention_days: int = _RETENTION_DEFAULT) -> int:
             print(f"unknown corkboard subcommand {cmd!r}", file=sys.stderr)
             return 1
         return 0
-    except (ValueError, guard.SecretRejected, OSError) as exc:
+    except (ValueError, guard.SecretRejected, actions.DeliveryFailed, OSError) as exc:
         print(f"corkboard: {exc}", file=sys.stderr)
         return 1
 
