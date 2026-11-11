@@ -1,6 +1,7 @@
 name: corkboard
 version: "0.1.0"
 manifest_version: 2
+requires_hermes: ">=0.21.6"
 description: One place where agents pin "only the owner can do this" items, and where items clear themselves when a check passes.
 author: Elijah Boston
 license: MIT

@@ -8,6 +8,45 @@ A native Hermes general plugin: one agent tool (`corkboard`), one CLI command
 half (a sidebar page, a foldable side pane beside any view, and a status-bar badge) that
 shares the same backend as the web dashboard.
 
+Requires Hermes 0.21.6 or newer.
+
+![The Corkboard side pane beside the main workspace](docs/screenshots/00-app.png)
+
+| Yes / no | Choice (recommendation starred) | Kanban card |
+|---|---|---|
+| ![Yes/no pin](docs/screenshots/01-yes-no.png) | ![Choice pin](docs/screenshots/02-choice.png) | ![Blocked kanban card pin](docs/screenshots/03-kanban.png) |
+
+| Self-clearing check | Dismissed, with Reopen |
+|---|---|
+| ![DNS check pin](docs/screenshots/04-check.png) | ![Dismissed tab](docs/screenshots/05-dismissed.png) |
+
+## What it does on your machine
+
+Read this before installing.
+
+- **One shared database for every profile.** Pins live in
+  `~/.hermes/plugin-data/corkboard/data.db`, outside any single profile. Every profile with the
+  plugin enabled reads and writes the same board. Pins hold titles, questions, answers, links and
+  where each pin came from (a profile name, session id or board/task ref) — never message text
+  and never credentials.
+- **Commands it runs.** All with a timeout, none with a shell unless noted:
+  - `dig +short NS <domain>` for DNS checks (agents and the owner can add these). This is a normal
+    DNS lookup through your resolver.
+  - `hermes kanban show|list … --json` to read card status, and `hermes kanban comment …` to post
+    your answer to a blocked card as an `Owner decision:` comment (which resumes the worker).
+  - **Owner-added shell checks.** `hermes corkboard add … --check-command "<cmd>"` stores a shell
+    command that runs (via the shell, 5s timeout) whenever checks run, including from a cron job you
+    set up. It runs without an approval prompt because only you can add it: the agent tool refuses
+    `command` checks. Treat it like a line in your crontab.
+- **When it runs.** DNS and shell checks run only on `hermes corkboard check` (by hand or from a
+  cron job you add). On each kanban dispatch tick it reads blocked cards to clear finished kanban
+  pins, and purges closed pins past the retention window. The plugin starts no background process
+  and installs no cron job of its own.
+- **Network.** None of its own beyond the DNS lookups above. No telemetry, no third-party
+  services, no self-update.
+- **Desktop.** The pane talks only to your Hermes backend through the plugin SDK. Colour
+  preferences are stored per machine.
+
 ## Install
 
 Clone or symlink this repo into `~/.hermes/plugins/corkboard/`, then enable it:
