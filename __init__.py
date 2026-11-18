@@ -54,7 +54,21 @@ CORKBOARD_SCHEMA = {
                 "enum": ["pin", "list", "get", "done", "dismiss"],
                 "description": "What to do.",
             },
-            "title": {"type": "string", "description": "One line: what is needed (for 'pin')."},
+            "title": {
+                "type": "string",
+                "description": "Short title, 8 words or fewer: what is needed (for 'pin'). "
+                "Put the explanation in 'detail', not here.",
+            },
+            "detail": {
+                "type": "string",
+                "description": "Optional longer explanation shown when the owner opens the pin. "
+                "`code`, URLs and [[note]] links render.",
+            },
+            "waiting_on": {
+                "type": "string",
+                "description": "Set only when the pin waits on someone other than the owner "
+                "(e.g. 'Hermes maintainers', 'Apple review'); it is listed under Waiting on others.",
+            },
             "link": {"type": "string", "description": "Card / issue / URL (for 'pin')."},
             "unblocks": {"type": "string", "description": "What this frees up (for 'pin')."},
             "kind": {
@@ -106,6 +120,8 @@ def _tool_handler(args: dict[str, Any], retention_days: int = _RETENTION_DEFAULT
                 title=args.get("title") or "",
                 link=args.get("link"),
                 unblocks=args.get("unblocks"),
+                detail=args.get("detail"),
+                waiting_on=args.get("waiting_on"),
                 check_kind=args.get("check_kind"),
                 check_arg=args.get("check_arg"),
                 source=f"agent:{origin_profile}",
@@ -185,6 +201,8 @@ def _setup_argparse(subparser: Any) -> None:
     p_add.add_argument("title", help="One line: what is needed")
     p_add.add_argument("--link", help="Card / issue / URL")
     p_add.add_argument("--unblocks", help="What this frees up")
+    p_add.add_argument("--detail", help="Longer explanation shown when the pin is opened")
+    p_add.add_argument("--waiting-on", dest="waiting_on", help="Who else this waits on (lists it under Waiting)")
     p_add.add_argument("--kind", choices=list(actions.KINDS), default="task")
     p_add.add_argument("--question")
     p_add.add_argument("--choice", action="append", dest="choices", help="One choice (repeatable, max 4)")
@@ -251,6 +269,8 @@ def _cli_handler(args: Any, retention_days: int = _RETENTION_DEFAULT) -> int:
                 title=args.title,
                 link=getattr(args, "link", None),
                 unblocks=getattr(args, "unblocks", None),
+                detail=getattr(args, "detail", None),
+                waiting_on=getattr(args, "waiting_on", None),
                 kind=getattr(args, "kind", "task"),
                 question=getattr(args, "question", None),
                 check_kind=check_kind,

@@ -35,6 +35,18 @@ def test_pin_list_round_trip(registered_ctx, store):
     assert out["pins"][0]["id"] == pin_id
 
 
+def test_tool_pin_carries_detail_and_waiting_on(registered_ctx, store):
+    handler = registered_ctx.tools["corkboard"]["handler"]
+    out = json.loads(handler({
+        "action": "pin", "title": "Track bug #151126",
+        "detail": "Answer maintainer questions.", "waiting_on": "  Hermes maintainers ",
+    }))
+    assert out["pin"]["detail"] == "Answer maintainer questions."
+    assert out["pin"]["waiting_on"] == "Hermes maintainers"
+    out = json.loads(handler({"action": "pin", "title": "Plain", "waiting_on": "   "}))
+    assert out["pin"]["waiting_on"] is None
+
+
 def test_get_returns_answer(registered_ctx, store):
     handler = registered_ctx.tools["corkboard"]["handler"]
     out = json.loads(handler({"action": "pin", "title": "q", "kind": "yes_no", "question": "go?"}))

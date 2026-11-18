@@ -12,7 +12,7 @@
 // a stored pointer.
 
 import { jsx, jsxs } from 'react/jsx-runtime'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   host,
   haptic,
@@ -183,6 +183,186 @@ export function sortPins(pins, sort) {
     if (aId > bId) return 1
     return 0
   })
+}
+
+// -- inbox helpers (CORE-641) --------------------------------------------------
+
+// Open pins older than this read as stale (amber age).
+export const STALE_DAYS = 5
+
+// Compact age for the row's right edge: `now`, `5m`, `6h`, `2d`, `1w`, `3mo`, `1y`.
+export function shortAge(seconds, now = Date.now() / 1000) {
+  const s = Number(seconds)
+  if (!Number.isFinite(s) || s <= 0) return ''
+  const diff = Math.max(0, Math.floor(now - s))
+  if (diff < 60) return 'now'
+  const minutes = Math.floor(diff / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d`
+  if (days < 30) return `${Math.floor(days / 7)}w`
+  if (days < 365) return `${Math.floor(days / 30)}mo`
+  return `${Math.floor(days / 365)}y`
+}
+
+// An open pin that has sat for `days` or more. Closed pins are never stale.
+export function isStale(pin, now = Date.now() / 1000, days = STALE_DAYS) {
+  if (pin?.status !== 'open') return false
+  const s = Number(pin?.created_at)
+  if (!Number.isFinite(s) || s <= 0) return false
+  return now - s >= days * 86400
+}
+
+// Which inbox group a pin sits in: waiting on someone else, a decision, or an action.
+export function pinGroup(pin) {
+  if (String(pin?.waiting_on ?? '').trim()) return 'waiting'
+  if (pin?.kind && pin.kind !== 'task') return 'decide'
+  return 'act'
+}
+
+export const GROUPS = [
+  ['act', 'Needs you'],
+  ['decide', 'Decide'],
+  ['waiting', 'Waiting on others'],
+]
+
+// Pins split into the non-empty inbox groups, in GROUPS order; order inside a group is kept.
+export function groupPins(pins) {
+  const list = Array.isArray(pins) ? pins : []
+  return GROUPS
+    .map(([key, label]) => ({ key, label, pins: list.filter((p) => pinGroup(p) === key) }))
+    .filter((g) => g.pins.length > 0)
+}
+
+// Pin counts per status tab.
+export function statusCounts(pins) {
+  const counts = { open: 0, done: 0, dismissed: 0, all: 0 }
+  for (const p of Array.isArray(pins) ? pins : []) {
+    counts.all += 1
+    if (Object.prototype.hasOwnProperty.call(counts, p?.status)) counts[p.status] += 1
+  }
+  return counts
+}
+
+const TITLE_FITS = 72
+const TITLE_MAX = 60
+const CLAUSE_BREAKS = ['. ', ': ', '; ', '? ', '! ', ' (', ' — ', ' – ', ' - ']
+
+// The leading clause of a long legacy title (a break at or after 20 chars), else a word cut.
+function firstClause(text) {
+  let best = -1
+  for (const sep of CLAUSE_BREAKS) {
+    let i = text.indexOf(sep)
+    while (i !== -1 && i < 20) i = text.indexOf(sep, i + 1)
+    if (i !== -1 && (best === -1 || i < best)) best = i
+  }
+  if (best !== -1 && best <= TITLE_MAX) return text.slice(0, best).replace(/[\s,]+$/, '')
+  const words = text.slice(0, TITLE_MAX + 1).split(' ')
+  if (words.length > 1) words.pop()
+  return `${words.join(' ').replace(/[\s,.;:]+$/, '')}…`
+}
+
+// The row title and the expandable detail. Pins with a `detail` keep their title as is;
+// older pins that put a paragraph in `title` show its first clause and keep the whole
+// paragraph as the detail, so nothing is lost.
+export function splitTitle(pin) {
+  const full = plainText(pin?.title).trim()
+  const detail = String(pin?.detail ?? '').trim()
+  if (detail || full.length <= TITLE_FITS) return { title: full, detail }
+  return { title: firstClause(full), detail: full }
+}
+
+// Hosts a bare `host/path` link may use; keeps `secrets.py` and `plugin.js` as text.
+const BARE_TLDS = 'com|org|net|io|dev|app|ai|co|so|sh|me|gg|xyz|us|uk'
+const RICH_RE = new RegExp(
+  '`([^`\\n]+)`'
+  + '|\\[\\[([^\\]\\n]+)\\]\\]'
+  + '|(https?:\\/\\/[^\\s<>`]+)'
+  + `|\\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+(?:${BARE_TLDS})\\/[^\\s<>\`]*)`
+  + '|\\b([A-Z][A-Z0-9]{1,9}-\\d+)\\b',
+  'g',
+)
+const TRAILING_PUNCT = /[.,;:!?'")\]]+$/
+
+// Split free text into render tokens: `text`, `code` (backticks), `note` ([[wiki link]]),
+// `url` (http(s) or bare host/path, with `href`), and `issue` (a tracker id like CORE-570).
+export function parseRich(text) {
+  const src = String(text ?? '')
+  const out = []
+  const pushText = (v) => {
+    if (!v) return
+    const last = out[out.length - 1]
+    if (last && last.t === 'text') last.v += v
+    else out.push({ t: 'text', v })
+  }
+  let at = 0
+  for (const m of src.matchAll(RICH_RE)) {
+    pushText(src.slice(at, m.index))
+    at = m.index + m[0].length
+    if (m[1] !== undefined) out.push({ t: 'code', v: m[1] })
+    else if (m[2] !== undefined) out.push({ t: 'note', v: m[2] })
+    else if (m[3] !== undefined || m[4] !== undefined) {
+      const raw = m[3] ?? m[4]
+      const tail = (TRAILING_PUNCT.exec(raw) || [''])[0]
+      const v = tail ? raw.slice(0, -tail.length) : raw
+      out.push({ t: 'url', v, href: m[3] !== undefined ? v : `https://${v}` })
+      pushText(tail)
+    } else out.push({ t: 'issue', v: m[5] })
+  }
+  pushText(src.slice(at))
+  return out
+}
+
+// `[[Projects/Hermes Issue Sync/Status]]` -> `Hermes Issue Sync / Status`; `[[a|b]]` -> `b`.
+export function noteLabel(target) {
+  const raw = String(target ?? '')
+  const alias = raw.split('|')
+  if (alias.length > 1 && alias[1].trim()) return alias[1].trim()
+  const parts = alias[0].split('/').map((p) => p.trim()).filter(Boolean)
+  return parts.slice(-2).join(' / ') || raw
+}
+
+// Short label for a link chip: GitHub issues/PRs as `GitHub #123`, Linear as its id, else host.
+export function linkLabel(href) {
+  try {
+    const u = new URL(href)
+    const host = u.hostname.replace(/^www\./, '')
+    const parts = u.pathname.split('/').filter(Boolean)
+    if (host === 'github.com' && parts.length >= 4 && (parts[2] === 'issues' || parts[2] === 'pull')) {
+      return `GitHub #${parts[3]}`
+    }
+    if (host === 'linear.app') {
+      const i = parts.indexOf('issue')
+      if (i !== -1 && parts[i + 1]) return parts[i + 1].toUpperCase()
+    }
+    return host
+  } catch (_e) {
+    return String(href ?? '')
+  }
+}
+
+// The first URL in a pin's link text, as `{ href, label }`, or null.
+export function primaryLink(pin) {
+  const tok = parseRich(pin?.link).find((t) => t.t === 'url')
+  return tok ? { href: tok.href, label: linkLabel(tok.href) } : null
+}
+
+// The row's second line as `{ label, text }`, or null. Answers win on closed pins, then who
+// it waits on, then a decision's question, then what it unblocks, then non-URL link text.
+export function subline(pin) {
+  const value = pin?.status !== 'open' ? answerValue(pin) : null
+  if (value !== null) return { label: 'Answered', text: value }
+  const waiting = String(pin?.waiting_on ?? '').trim()
+  if (waiting) return { label: 'Waiting on', text: waiting }
+  const question = String(pin?.question ?? '').trim()
+  if (pin?.kind && pin.kind !== 'task' && question) return { label: '', text: question }
+  const unblocks = String(pin?.unblocks ?? '').trim()
+  if (unblocks) return { label: 'Unblocks', text: unblocks }
+  const link = String(pin?.link ?? '').trim()
+  if (link && !primaryLink(pin)) return { label: '', text: link }
+  return null
 }
 
 // -- origin helpers ------------------------------------------------------------
@@ -362,6 +542,7 @@ const avatarCache = new Map() // profileName -> { data: string|null, settled: bo
 
 function usePins(ctx, status = 'open', sort = 'newest') {
   const [pins, setPins] = useState([])
+  const [counts, setCounts] = useState(null)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(null)
 
@@ -370,6 +551,7 @@ function usePins(ctx, status = 'open', sort = 'newest') {
       const data = await ctx.rest('/pins?status=all&sort=newest')
       const list = Array.isArray(data) ? data : (data && data.pins) || []
       setPins(questionsFirst(sortPins(filterPins(list, status), sort)))
+      setCounts(statusCounts(list))
       setError(null)
     } catch (err) {
       // Keep the last good list on screen and say the board is stale, not "empty".
@@ -397,7 +579,7 @@ function usePins(ctx, status = 'open', sort = 'newest') {
     }
   }, [ctx, reload])
 
-  return { pins, loaded, error, reload }
+  return { pins, counts, loaded, error, reload }
 }
 
 function useProfiles() {
@@ -507,12 +689,6 @@ const onEnter = (fn) => (e) => {
   }
 }
 
-function TaskControls({ act, busy }) {
-  return jsx('button', {
-    type: 'button', disabled: busy, onClick: () => act('done'), className: btn(true), children: 'Done',
-  })
-}
-
 function YesNoAnswer({ act, busy }) {
   const [note, setNote] = useState('')
   const send = (value) => async () => {
@@ -580,14 +756,6 @@ function TextAnswer({ pin, act, busy }) {
   ] })
 }
 
-function LinkButton({ label, onClick, busy }) {
-  return jsx('button', {
-    type: 'button', disabled: busy, onClick,
-    className: 'text-[0.6875rem] text-(--ui-text-tertiary) hover:underline disabled:opacity-50',
-    children: label,
-  })
-}
-
 // -- origin UI -----------------------------------------------------------------
 
 function BotAvatar({ profileName, display, bot }) {
@@ -646,16 +814,162 @@ function OriginOpenButton({ pin }) {
   })
 }
 
-// -- pin row -------------------------------------------------------------------
+// -- inbox styles (CORE-641) ---------------------------------------------------
+//
+// A scoped stylesheet, not Tailwind classes: a disk plugin's class names are not in the app's
+// Tailwind build. Colours come from the app's own `--ui-*` tokens, so light/dark follow the theme;
+// group hues are mixed toward `--ui-base` so they stay readable on both backgrounds.
 
-function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
-  const isOpen = pin.status === 'open'
-  const now = Date.now() / 1000
-  const resolvedPin = resolvePinOrigin(pin, profiles)
+const STYLE_ID = 'corkboard-inbox-styles'
+const UNDO_MS = 5000
+
+const INBOX_CSS = `
+.cb-inbox{--cb-act:color-mix(in srgb,var(--ui-blue,#0053fd) 70%,var(--ui-base,#808080));
+  --cb-dec:color-mix(in srgb,var(--ui-purple,#9e94d5) 78%,var(--ui-base,#808080));
+  --cb-wait:var(--ui-text-tertiary,#8a8f98);--cb-stale:var(--ui-yellow,#c08532);--cb-ok:var(--ui-green,#1f8a65);
+  --cb-t1:var(--ui-text-primary,currentColor);--cb-t2:var(--ui-text-secondary,currentColor);--cb-t3:var(--ui-text-tertiary,#8a8f98);
+  --cb-hover:var(--ui-row-hover-background,rgba(127,127,127,.1));--cb-stroke:var(--ui-stroke-secondary,rgba(127,127,127,.4));
+  display:flex;flex-direction:column;font-size:12.5px;line-height:1.4;color:var(--cb-t1);padding-bottom:10px}
+.cb-inbox :focus-visible{outline:2px solid var(--ui-accent,#4c8dff);outline-offset:1px;border-radius:4px}
+.cb-bar{display:flex;align-items:center;gap:2px;padding:6px 8px 2px}
+.cb-tab{border:0;background:none;padding:3px 7px;border-radius:5px;font:inherit;font-size:11.5px;color:var(--cb-t3);cursor:pointer}
+.cb-tab:hover{background:var(--cb-hover);color:var(--cb-t1)}
+.cb-tab[aria-pressed=true]{background:var(--ui-control-active-background,var(--cb-hover));color:var(--cb-t1);font-weight:500}
+.cb-n{margin-left:4px;color:var(--cb-t3);font-weight:400;font-variant-numeric:tabular-nums}
+.cb-sort{margin-left:auto;position:relative;display:inline-flex;align-items:center}
+.cb-sort select{appearance:none;-webkit-appearance:none;border:0;background:none;font:inherit;font-size:11.5px;color:var(--cb-t3);padding:3px 18px 3px 6px;border-radius:5px;cursor:pointer}
+.cb-sort select:hover{background:var(--cb-hover);color:var(--cb-t1)}
+.cb-sort::after{content:"";position:absolute;right:7px;top:50%;width:4.5px;height:4.5px;border-right:1.5px solid var(--cb-t3);border-bottom:1.5px solid var(--cb-t3);transform:translateY(-70%) rotate(45deg);pointer-events:none}
+.cb-grp{display:flex;align-items:center;gap:6px;padding:10px 12px 3px;font-size:11px;font-weight:600}
+.cb-grp .cb-n{margin-left:0}
+.cb-g-act{color:var(--cb-act)}.cb-g-decide{color:var(--cb-dec)}.cb-g-waiting{color:var(--cb-wait)}
+.cb-row{position:relative;display:flex;align-items:flex-start;gap:9px;padding:5px 8px 5px 12px}
+.cb-row:hover,.cb-row.cb-expanded{background:var(--cb-hover)}
+.cb-row::before{content:"";position:absolute;left:3px;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--cb-origin,transparent);opacity:.55}
+.cb-mark{flex:none;width:15px;height:15px;margin-top:1.5px;border-radius:50%;border:1.5px solid var(--cb-stroke);background:none;padding:0;display:inline-flex;align-items:center;justify-content:center}
+button.cb-mark{cursor:pointer}
+button.cb-mark:hover{border-color:var(--cb-ok)}
+button.cb-mark:hover::after,.cb-mark.cb-done::after{content:"";width:3.5px;height:7px;border-right:1.5px solid var(--cb-ok);border-bottom:1.5px solid var(--cb-ok);transform:translateY(-1px) rotate(45deg)}
+.cb-mark.cb-done{border-color:var(--cb-ok);background:color-mix(in srgb,var(--cb-ok) 18%,transparent)}
+.cb-mark.cb-wait{border-style:dashed}
+.cb-mark.cb-dis::after{content:"";width:7px;border-top:1.5px solid var(--cb-t3)}
+.cb-diamond{flex:none;width:10px;height:10px;margin:4px 2.5px 0;border:1.5px solid var(--cb-dec);border-radius:2px;transform:rotate(45deg)}
+.cb-body{flex:1;min-width:0;cursor:pointer}
+.cb-title{display:block;width:100%;border:0;background:none;padding:0;text-align:left;font:inherit;color:var(--cb-t1);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb-expanded .cb-title{white-space:normal}
+.cb-waiting .cb-title{color:var(--cb-t2)}
+.cb-justdone .cb-title{text-decoration:line-through;color:var(--cb-t3)}
+.cb-sub{font-size:11.5px;color:var(--cb-t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb-sub-v{color:var(--cb-t2)}
+.cb-right{flex:none;position:relative;display:flex;align-items:center;gap:2px;margin-top:1px}
+.cb-age{font-size:11px;color:var(--cb-t3);font-variant-numeric:tabular-nums;padding:0 2px}
+.cb-age.cb-stale{color:var(--cb-stale);font-weight:500}
+.cb-more{border:0;background:none;color:var(--cb-t3);width:20px;height:18px;border-radius:4px;cursor:pointer;font:inherit;font-size:13px;line-height:1;letter-spacing:1px;opacity:0}
+.cb-row:hover .cb-more,.cb-expanded .cb-more,.cb-more:focus-visible,.cb-more[aria-expanded=true]{opacity:1}
+.cb-more:hover{background:var(--ui-control-hover-background,var(--cb-hover));color:var(--cb-t1)}
+.cb-menu{position:absolute;right:0;top:22px;z-index:20;min-width:132px;background:var(--ui-bg-elevated,var(--ui-bg-card,Canvas));border:1px solid var(--cb-stroke);border-radius:6px;padding:3px;box-shadow:0 6px 18px rgba(0,0,0,.22)}
+.cb-menu button{display:block;width:100%;text-align:left;border:0;background:none;font:inherit;font-size:12px;color:var(--cb-t1);padding:4px 8px;border-radius:4px;cursor:pointer;white-space:nowrap}
+.cb-menu button:hover{background:var(--cb-hover)}
+.cb-undo{font-size:11px;color:var(--cb-t3);white-space:nowrap}
+.cb-undo button{border:0;background:none;padding:0;font:inherit;color:var(--cb-act);cursor:pointer}
+.cb-detail{margin:2px 10px 6px 36px;padding:2px 0 2px 10px;border-left:1.5px solid var(--cb-stroke);font-size:12px;color:var(--cb-t2);display:flex;flex-direction:column;gap:7px}
+.cb-detail p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.cb-kv{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:0;font-size:11.5px}
+.cb-kv dt{color:var(--cb-t3)}.cb-kv dd{margin:0;color:var(--cb-t2);overflow-wrap:anywhere;min-width:0}
+.cb-code{font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:.9em;background:var(--ui-inline-code-background,rgba(127,127,127,.15));color:var(--ui-inline-code-foreground,inherit);padding:0 4px;border-radius:3px}
+.cb-link{border:0;background:none;padding:0;font:inherit;color:var(--cb-t2);text-decoration:underline;text-decoration-color:var(--cb-stroke);text-underline-offset:2px;cursor:pointer}
+.cb-link:hover{color:var(--cb-t1);text-decoration-color:currentColor}
+.cb-note{color:var(--cb-t2);border-bottom:1px dotted var(--cb-stroke)}
+.cb-issue{color:var(--cb-t2);font-weight:500}
+.cb-gi{flex:none;width:8px;height:8px}
+.cb-gi-act{border-radius:50%;background:currentColor}
+.cb-gi-decide{width:7px;height:7px;border:1.5px solid currentColor;border-radius:1.5px;transform:rotate(45deg)}
+.cb-gi-waiting{width:9px;height:9px;border-radius:50%;border:1.5px dashed currentColor}
+.cb-err{font-size:11px;color:var(--ui-red,#cf2d56);padding:0 12px 4px 36px}
+.cb-empty{padding:10px 12px;font-size:12px;color:var(--cb-t3)}
+.cb-banner{margin:4px 10px;display:flex;align-items:center;gap:8px;border:1px solid var(--cb-stroke);border-radius:6px;padding:4px 8px;font-size:11px;color:var(--ui-red,#cf2d56)}
+.cb-banner span{flex:1;min-width:0}
+.cb-btn{border:1px solid var(--cb-stroke);background:none;border-radius:5px;padding:2px 9px;font:inherit;font-size:11.5px;color:var(--cb-t2);cursor:pointer}
+.cb-btn:hover{background:var(--cb-hover);color:var(--cb-t1)}
+`
+
+// Add the inbox stylesheet once; returns the remover for `ctx.onDispose`.
+function installStyles() {
+  if (typeof document === 'undefined') return () => {}
+  document.getElementById(STYLE_ID)?.remove()
+  const el = document.createElement('style')
+  el.id = STYLE_ID
+  el.textContent = INBOX_CSS
+  document.head.append(el)
+  return () => el.remove()
+}
+
+// -- inbox rows (CORE-641) -----------------------------------------------------
+
+// Free text with `code`, [[note]] links, URLs and tracker ids rendered in place.
+function RichText({ ctx, text }) {
+  const open = (href) => (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    ctx?.os?.openExternal?.(href)
+  }
+  return parseRich(text).map((tok, i) => {
+    if (tok.t === 'code') return jsx('code', { key: i, className: 'cb-code', children: tok.v })
+    if (tok.t === 'note') return jsx('span', { key: i, className: 'cb-note', title: tok.v, children: noteLabel(tok.v) })
+    if (tok.t === 'issue') return jsx('span', { key: i, className: 'cb-issue', children: tok.v })
+    if (tok.t === 'url') {
+      return jsx('button', {
+        key: i, type: 'button', className: 'cb-link', title: tok.href, onClick: open(tok.href),
+        children: `${linkLabel(tok.href)} \u2197`,
+      })
+    }
+    return tok.v
+  })
+}
+
+function RowMark({ pin, closedVerb, group, busy, onDone }) {
+  const status = closedVerb || pin.status
+  if (status === 'done') return jsx('span', { className: 'cb-mark cb-done', role: 'img', 'aria-label': 'Done' })
+  if (status === 'dismissed') return jsx('span', { className: 'cb-mark cb-dis', role: 'img', 'aria-label': 'Dismissed' })
+  if (pin.kind && pin.kind !== 'task') {
+    return jsx('span', { className: 'cb-diamond', role: 'img', 'aria-label': 'Needs your answer', title: 'Needs your answer' })
+  }
+  return jsx('button', {
+    type: 'button', disabled: busy, onClick: onDone,
+    className: group === 'waiting' ? 'cb-mark cb-wait' : 'cb-mark',
+    'aria-label': 'Mark done', title: 'Mark done',
+  })
+}
+
+function RowMenu({ items }) {
+  const [open, setOpen] = useState(false)
+  return jsxs('div', {
+    style: { position: 'relative' },
+    onBlur: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false) },
+    onKeyDown: (e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false) } },
+    children: [
+      jsx('button', {
+        type: 'button', className: 'cb-more', 'aria-label': 'More actions', 'aria-haspopup': 'menu',
+        'aria-expanded': open, onClick: () => setOpen(!open), children: '\u22EF',
+      }),
+      open
+        ? jsx('div', { className: 'cb-menu', role: 'menu', children: items.map(([label, run]) =>
+            jsx('button', { type: 'button', role: 'menuitem', key: label, onClick: () => { setOpen(false); run() }, children: label })
+          ) })
+        : null,
+    ],
+  })
+}
+
+function PinRow({ ctx, pin, onChanged, onClosed, onForget, closedVerb, profiles, prefs, now }) {
+  const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const resolvedPin = resolvePinOrigin(pin, profiles)
+  const isOpen = pin.status === 'open' && !closedVerb
+  const group = pinGroup(pin)
 
-  // One request at a time per card; failures stay on the card until the next attempt.
+  // One request at a time per row; failures stay on the row until the next attempt.
   const act = async (verb, body) => {
     if (busy) return false
     setBusy(true)
@@ -663,7 +977,7 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
     try {
       await ctx.rest(`/pins/${pin.id}/${verb}`, body ? { method: 'POST', body } : { method: 'POST' })
       haptic('tap')
-      onChanged()
+      await onChanged()
       return true
     } catch (err) {
       setError(errorMessage(err))
@@ -673,121 +987,124 @@ function PinRow({ ctx, pin, onChanged, profiles, prefs }) {
     }
   }
 
-  const controls = !isOpen ? null
-    : pin.kind === 'yes_no' ? jsx(YesNoAnswer, { pin, act, busy })
-    : pin.kind === 'choice' ? jsx(ChoiceAnswer, { pin, act, busy })
-    : pin.kind === 'text' ? jsx(TextAnswer, { pin, act, busy })
-    : jsx(TaskControls, { pin, act, busy })
+  // Close optimistically so the row stays put showing "Done · Undo"; roll back on failure.
+  // `status` is the pin status the row shows; the backend route is `done` / `dismiss`.
+  const close = async (status) => {
+    onClosed(pin, status)
+    if (!(await act(status === 'done' ? 'done' : 'dismiss'))) onForget(pin.id)
+  }
+  const undo = async () => {
+    if (await act('reopen')) onForget(pin.id)
+  }
 
-  const titleText = plainText(pin.title)
-  const url = linkTarget(pin.link)
-  const title = url
-    ? jsx('button', {
-        type: 'button',
-        onClick: (e) => { e.preventDefault(); ctx.os.openExternal(url) },
-        className: 'text-left font-medium text-(--ui-text) hover:underline',
-        children: titleText,
-      })
-    : jsx('span', { className: 'font-medium text-(--ui-text)', children: titleText })
+  const { title, detail } = splitTitle(pin)
+  const sub = subline(pin)
+  const plink = primaryLink(pin)
+  const openLink = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    ctx?.os?.openExternal?.(plink.href)
+  }
 
-  const origin = jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-    jsx(OriginChip, { pin: resolvedPin, profiles }),
-    jsx(OriginOpenButton, { pin: resolvedPin }),
-  ].filter(Boolean) })
-
-  const small = 'text-[0.6875rem] text-(--ui-text-tertiary)'
-
-  const where = pin.link && !url
-    ? jsx('div', { className: small, children: `Where: ${plainText(pin.link)}` })
+  const subEl = (sub || plink)
+    ? jsxs('div', { className: 'cb-sub', children: [
+        sub && sub.label ? `${sub.label} ` : null,
+        sub ? jsx('span', { className: 'cb-sub-v', children: jsx(RichText, { ctx, text: sub.text }) }) : null,
+        sub && plink ? ' \u00B7 ' : null,
+        plink ? jsx('button', { type: 'button', className: 'cb-link', title: plink.href, onClick: openLink, children: `${plink.label} \u2197` }) : null,
+      ] })
     : null
 
-  const question = pin.question
-    ? jsx('div', { className: 'text-xs text-(--ui-text-secondary)', children: pin.question })
-    : null
+  const age = shortAge(pin.created_at, now)
+  const right = closedVerb
+    ? jsxs('span', { className: 'cb-undo', role: 'status', children: [
+        closedVerb === 'done' ? 'Done \u00B7 ' : 'Dismissed \u00B7 ',
+        jsx('button', { type: 'button', disabled: busy, onClick: undo, children: 'Undo' }),
+      ] })
+    : jsxs('div', { className: 'cb-right', children: [
+        age ? jsx('span', {
+          className: isStale(pin, now) ? 'cb-age cb-stale' : 'cb-age',
+          title: `Pinned ${timeAgo(pin.created_at, now)} \u00B7 ${isoTime(pin.created_at)}`,
+          children: age,
+        }) : null,
+        jsx(RowMenu, { items: isOpen
+          ? [['Dismiss', () => close('dismissed')]]
+          : [['Reopen', () => act('reopen')]] }),
+      ] })
 
-  const unblocks = pin.unblocks
-    ? jsx('div', { className: small, children: `Unblocks: ${pin.unblocks}` })
-    : null
-
-  const check = checkStatus(pin, now)
-  const checkLine = check
-    ? jsx('div', { className: small, title: isoTime(pin.last_checked_at) || undefined, children: check })
-    : null
-
-  const note = !isOpen && pin.answer_note
-    ? jsx('div', { className: small, children: `Note: ${pin.answer_note}` })
-    : null
-
-  const meta = (question || unblocks || checkLine || note)
-    ? jsxs('div', { className: 'flex flex-col gap-0.5', children: [question, unblocks, checkLine, note].filter(Boolean) })
-    : null
-
-  const stamps = metaLine(pin, now)
-  const ageLine = jsx('div', {
-    className: `flex flex-wrap items-center gap-x-1 ${small}`,
-    children: stamps.map((seg, i) => jsxs('span', {
-      key: i,
-      children: [
-        i > 0 ? jsx('span', { children: ' · ' }) : null,
-        jsx('span', {
-          title: seg.iso || undefined,
-          children: seg.label === 'Answered' ? `Answered: ${seg.ago}` : (seg.ago ? `${seg.label} ${seg.ago}` : seg.label),
-        }),
-      ],
-    })),
-  })
-
-  const actions = isOpen
-    ? jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-        controls,
-        jsx(LinkButton, { label: 'Dismiss', busy, onClick: () => act('dismiss') }),
-      ].filter(Boolean) })
-    : pin.status === 'dismissed'
-      ? jsx('div', { children: jsx(LinkButton, { label: 'Reopen', busy, onClick: () => act('reopen') }) })
-      : null
-
-  const errorLine = error
-    ? jsx('div', { role: 'alert', className: 'text-[0.6875rem] text-(--ui-red)', children: error })
-    : null
-
-  const border = borderColor(resolvedPin, prefs, profileColor)
-
-  return jsxs('div', {
-    className: 'rounded border p-2 flex flex-col gap-1.5',
-    style: { borderColor: border },
+  const row = jsxs('div', {
+    className: ['cb-row', expanded && 'cb-expanded', isOpen && group === 'waiting' && 'cb-waiting', closedVerb && 'cb-justdone']
+      .filter(Boolean).join(' '),
+    style: { '--cb-origin': borderColor(resolvedPin, prefs, profileColor) },
     'aria-busy': busy || undefined,
     children: [
-      title,
-      origin,
-      where,
-      meta,
-      ageLine,
-      actions,
-      errorLine,
-    ].filter(Boolean),
+      jsx(RowMark, { pin, closedVerb, group, busy, onDone: () => close('done') }),
+      jsxs('div', {
+        className: 'cb-body', onClick: () => setExpanded(!expanded),
+        children: [
+          jsx('button', { type: 'button', className: 'cb-title', 'aria-expanded': expanded, title: expanded ? undefined : title, children: title }),
+          subEl,
+        ],
+      }),
+      right,
+    ],
   })
+
+  let detailEl = null
+  if (expanded) {
+    const question = pin.kind && pin.kind !== 'task' ? String(pin.question ?? '').trim() : ''
+    const kv = []
+    if (pin.unblocks && sub?.label !== 'Unblocks') kv.push(['Unblocks', jsx(RichText, { ctx, text: pin.unblocks })])
+    if (pin.waiting_on && sub?.label !== 'Waiting on') kv.push(['Waiting on', pin.waiting_on])
+    if (pin.link) kv.push(['Where', jsx(RichText, { ctx, text: pin.link })])
+    const check = checkStatus(pin, now)
+    if (check) kv.push(['Check', check])
+    if (!isOpen && pin.answer_note) kv.push(['Note', pin.answer_note])
+    kv.push(['From', jsxs('span', { className: 'inline-flex flex-wrap items-center gap-2', children: [
+      jsx(OriginChip, { pin: resolvedPin, profiles }),
+      jsx(OriginOpenButton, { pin: resolvedPin }),
+    ] })])
+    kv.push(['When', metaLine(pin, now).map((seg) =>
+      seg.label === 'Answered' ? `Answered: ${seg.ago}` : (seg.ago ? `${seg.label} ${seg.ago}` : seg.label)
+    ).join(' \u00B7 ')])
+
+    const controls = !isOpen ? null
+      : pin.kind === 'yes_no' ? jsx(YesNoAnswer, { pin, act, busy })
+      : pin.kind === 'choice' ? jsx(ChoiceAnswer, { pin, act, busy })
+      : pin.kind === 'text' ? jsx(TextAnswer, { pin, act, busy })
+      : null
+
+    detailEl = jsxs('div', { className: 'cb-detail', children: [
+      question && question !== sub?.text ? jsx('p', { children: jsx(RichText, { ctx, text: question }) }) : null,
+      detail ? jsx('p', { children: jsx(RichText, { ctx, text: detail }) }) : null,
+      jsx('dl', { className: 'cb-kv', children: kv.flatMap(([k, v]) => [
+        jsx('dt', { key: `${k}-k`, children: k }),
+        jsx('dd', { key: `${k}-v`, children: v }),
+      ]) }),
+      controls,
+    ].filter(Boolean) })
+  }
+
+  const errorLine = error ? jsx('div', { role: 'alert', className: 'cb-err', children: error }) : null
+  return jsxs('div', { children: [row, detailEl, errorLine].filter(Boolean) })
 }
 
-function FilterBar({ status, onStatus, sort, onSort }) {
+function FilterBar({ status, onStatus, sort, onSort, counts, trailing }) {
   const tabs = STATUSES.map(([value, label]) =>
-    jsx('button', {
-      type: 'button', key: value, onClick: () => onStatus(value),
-      'aria-pressed': status === value,
-      className: status === value
-        ? 'rounded px-2 py-0.5 text-[0.6875rem] font-medium bg-(--ui-accent) text-(--ui-accent-fg)'
-        : 'rounded px-2 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--ui-surface)',
-      children: label,
+    jsxs('button', {
+      type: 'button', key: value, className: 'cb-tab', 'aria-pressed': status === value,
+      onClick: () => onStatus(value),
+      children: [label, value !== 'all' && counts?.[value] ? jsx('span', { className: 'cb-n', children: counts[value] }) : null],
     })
   )
-  return jsxs('div', { className: 'flex flex-wrap items-center gap-1 px-3 pt-2', children: [
-    ...tabs,
-    jsx('button', {
-      type: 'button',
-      onClick: () => onSort(sort === 'newest' ? 'oldest' : 'newest'),
-      className: 'ml-auto rounded px-2 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) hover:bg-(--ui-surface)',
-      children: sort === 'newest' ? 'Newest' : 'Oldest',
-    }),
-  ] })
+  const sorter = jsx('label', { className: 'cb-sort', children: jsxs('select', {
+    'aria-label': 'Sort pins', value: sort, onChange: (e) => onSort(e.target.value),
+    children: [
+      jsx('option', { value: 'newest', children: 'Newest' }),
+      jsx('option', { value: 'oldest', children: 'Oldest' }),
+    ],
+  }) })
+  return jsxs('div', { className: 'cb-bar', children: [...tabs, sorter, trailing].filter(Boolean) })
 }
 
 // What an empty tab says: direction, not mood.
@@ -798,40 +1115,88 @@ export function emptyText(status) {
   return 'No pins yet.'
 }
 
-function PinList({ ctx }) {
+// Open pins plus rows closed in the last few seconds (still showing Undo), re-sorted so
+// a just-closed row stays where it was.
+export function withRecentlyClosed(pins, closed, sort) {
+  const list = Array.isArray(pins) ? pins : []
+  const ids = new Set(list.map((p) => p.id))
+  const extra = Object.values(closed || {}).map((c) => c.pin).filter((p) => p && !ids.has(p.id))
+  return extra.length ? sortPins([...list, ...extra], sort) : list
+}
+
+function PinList({ ctx, trailing = null }) {
   const [status, setStatus] = useState('open')
   const [sort, setSort] = useState('newest')
-  const { pins, loaded, error, reload } = usePins(ctx, status, sort)
+  const { pins, counts, loaded, error, reload } = usePins(ctx, status, sort)
   const profiles = useProfiles()
   const prefs = useValue($prefs)
+  const [closed, setClosed] = useState({}) // id -> { pin, verb } while its Undo shows
+  const timers = useRef(new Map())
+
+  useEffect(() => () => {
+    for (const t of timers.current.values()) clearTimeout(t)
+    timers.current.clear()
+  }, [])
+
+  const forget = useCallback((id) => {
+    clearTimeout(timers.current.get(id))
+    timers.current.delete(id)
+    setClosed((c) => {
+      if (!c[id]) return c
+      const next = { ...c }
+      delete next[id]
+      return next
+    })
+  }, [])
+
+  const onClosed = useCallback((pin, verb) => {
+    clearTimeout(timers.current.get(pin.id))
+    setClosed((c) => ({ ...c, [pin.id]: { pin, verb } }))
+    timers.current.set(pin.id, setTimeout(() => forget(pin.id), UNDO_MS))
+  }, [forget])
+
+  const bar = jsx(FilterBar, { status, onStatus: setStatus, sort, onSort: setSort, counts, trailing })
 
   if (!loaded) {
-    return jsx('div', { className: 'p-3 text-xs text-(--ui-text-tertiary)', children: 'Loading…' })
+    return jsxs('div', { className: 'cb-inbox', children: [bar, jsx('div', { className: 'cb-empty', children: 'Loading\u2026' })] })
   }
 
-  const label = status === 'open' ? 'open'
-    : status === 'done' ? 'done'
-    : status === 'dismissed' ? 'dismissed'
-    : 'pins'
-
   const banner = error
-    ? jsxs('div', { role: 'alert', className: 'mx-3 flex items-center gap-2 rounded border border-(--ui-border) px-2 py-1 text-[0.6875rem] text-(--ui-red)', children: [
-        jsx('span', { className: 'min-w-0 flex-1', children: `Couldn't load the board: ${error}` }),
-        jsx('button', { type: 'button', onClick: reload, className: btn(false), children: 'Retry' }),
+    ? jsxs('div', { role: 'alert', className: 'cb-banner', children: [
+        jsx('span', { children: `Couldn't load the board: ${error}` }),
+        jsx('button', { type: 'button', onClick: reload, className: 'cb-btn', children: 'Retry' }),
       ] })
     : null
 
-  // A failed first load has nothing true to show; say so instead of "empty".
-  const body = pins.length === 0
-    ? (error ? null : jsx('div', { className: 'px-3 text-xs text-(--ui-text-tertiary)', children: emptyText(status) }))
-    : jsxs('div', { className: 'flex flex-col gap-2 px-3 pb-3', children: pins.map((pin) => jsx(PinRow, { ctx, pin, onChanged: reload, key: pin.id, profiles, prefs })) })
+  const now = Date.now() / 1000
+  const shown = status === 'open' ? withRecentlyClosed(pins, closed, sort) : pins
+  const rowFor = (pin) => jsx(PinRow, {
+    ctx, pin, key: pin.id, profiles, prefs, now,
+    onChanged: reload, onClosed, onForget: forget,
+    closedVerb: status === 'open' ? closed[pin.id]?.verb : undefined,
+  })
 
-  return jsxs('div', { className: 'flex flex-col gap-2', children: [
-    jsx(FilterBar, { status, onStatus: setStatus, sort, onSort: setSort }),
-    banner,
-    jsx('div', { className: 'px-3 text-[0.6875rem] text-(--ui-text-tertiary)', children: `${pins.length} ${label}` }),
-    body,
-  ].filter(Boolean) })
+  let body
+  if (shown.length === 0) {
+    // A failed first load has nothing true to show; say so instead of "empty".
+    body = error ? null : jsx('div', { className: 'cb-empty', children: emptyText(status) })
+  } else if (status === 'open') {
+    body = groupPins(shown).map((g) => jsxs('section', {
+      key: g.key, 'aria-label': g.label,
+      children: [
+        jsxs('div', { className: `cb-grp cb-g-${g.key}`, children: [
+          jsx('span', { className: `cb-gi cb-gi-${g.key}`, 'aria-hidden': 'true' }),
+          g.label,
+          jsx('span', { className: 'cb-n', children: g.pins.length }),
+        ] }),
+        ...g.pins.map(rowFor),
+      ],
+    }))
+  } else {
+    body = shown.map(rowFor)
+  }
+
+  return jsxs('div', { className: 'cb-inbox', children: [bar, banner, body].filter(Boolean) })
 }
 
 function closeCorkboardPage() {
@@ -871,7 +1236,7 @@ function Board({ ctx, headerControls = null, onClose = null, compact = false }) 
   }, [ctx, onClose])
 
   const header = compact
-    ? jsx('div', { className: 'flex items-center justify-end px-2 pt-1.5', children: jsx(FoldPaneButton, { ctx }) })
+    ? null
     : jsxs('div', { className: 'flex items-center gap-2 px-3 pt-3', children: [
         jsx('div', { className: 'text-sm font-medium', children: 'Corkboard' }),
         headerControls,
@@ -879,7 +1244,7 @@ function Board({ ctx, headerControls = null, onClose = null, compact = false }) 
 
   return jsxs('div', { className: 'flex h-full flex-col overflow-y-auto', children: [
     header,
-    jsx(PinList, { ctx }),
+    jsx(PinList, { ctx, trailing: compact ? jsx(FoldPaneButton, { ctx }) : null }),
   ].filter(Boolean) })
 }
 
@@ -998,6 +1363,8 @@ export default {
   id: 'corkboard',
   name: 'Corkboard',
   register(ctx) {
+    const removeStyles = installStyles()
+    ctx.onDispose?.(removeStyles)
     $prefs.set(mergePrefs(readStorage(ctx, 'appearance', null)))
     const unsub = $prefs.listen((next) => writeStorage(ctx, 'appearance', next))
     ctx.onDispose?.(() => unsub())

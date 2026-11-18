@@ -106,3 +106,39 @@ def test_get_store_reuses_one_store_per_connection(tmp_path):
     finally:
         store_mod.reset_connection()
         conn.close()
+
+
+def test_detail_and_waiting_on_roundtrip(store):
+    row = store.pin("Track bug #1", detail="Long `code` text", waiting_on="Hermes maintainers")
+    got = store.get(row["id"])
+    assert got["detail"] == "Long `code` text"
+    assert got["waiting_on"] == "Hermes maintainers"
+    # A dedupe re-pin replaces both, including clearing them.
+    store.pin("Track bug #1", dedupe_key="k", detail="a", waiting_on="b")
+    again = store.pin("Track bug #1", dedupe_key="k")
+    assert again["detail"] is None and again["waiting_on"] is None
+
+
+def test_migrate_adds_detail_columns_to_old_board(tmp_path):
+    """A board created before CORE-641 gains `detail` / `waiting_on` and keeps its rows."""
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.execute(
+        "CREATE TABLE pins (id TEXT PRIMARY KEY, title TEXT NOT NULL, link TEXT, unblocks TEXT, "
+        "check_kind TEXT, check_arg TEXT, source TEXT NOT NULL, dedupe_key TEXT UNIQUE, "
+        "status TEXT NOT NULL DEFAULT 'open', created_at INTEGER NOT NULL, done_at INTEGER, "
+        "last_checked_at INTEGER, last_check_result TEXT, kind TEXT NOT NULL DEFAULT 'task', "
+        "question TEXT, choices TEXT, placeholder TEXT, answer TEXT, answer_note TEXT, "
+        "answered_at INTEGER, reply_to TEXT)"
+    )
+    conn.execute("INSERT INTO pins (id, title, source, created_at) VALUES ('p1', 'Old pin', 'manual', 1)")
+    conn.commit()
+    s = store_mod.Store(conn)
+    old = s.get("p1")
+    assert old["title"] == "Old pin"
+    assert old["detail"] is None and old["waiting_on"] is None
+    new = s.pin("New pin", detail="d", waiting_on="w")
+    assert s.get(new["id"])["waiting_on"] == "w"
+    store_mod.Store(conn)  # idempotent: a second open does not re-add columns
+    conn.close()

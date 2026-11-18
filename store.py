@@ -50,7 +50,9 @@ CREATE TABLE IF NOT EXISTS pins (
   origin_kind TEXT,
   origin_profile TEXT,
   origin_session_id TEXT,
-  origin_platform TEXT
+  origin_platform TEXT,
+  detail TEXT,
+  waiting_on TEXT
 )
 """
 
@@ -66,6 +68,7 @@ _FIELDS = (
     "status", "created_at", "done_at", "closed_at", "last_checked_at", "last_check_result",
     "kind", "question", "choices", "placeholder", "answer", "answer_note", "answered_at",
     "reply_to", "origin_kind", "origin_profile", "origin_session_id", "origin_platform",
+    "detail", "waiting_on",
 )
 _SELECT = ", ".join(_FIELDS)
 
@@ -102,6 +105,8 @@ class Store:
             ("origin_profile", "TEXT"),
             ("origin_session_id", "TEXT"),
             ("origin_platform", "TEXT"),
+            ("detail", "TEXT"),
+            ("waiting_on", "TEXT"),
         ):
             if column not in cols:
                 self.conn.execute(f"ALTER TABLE pins ADD COLUMN {column} {sqltype}")
@@ -138,6 +143,8 @@ class Store:
         origin_profile: Optional[str] = None,
         origin_session_id: Optional[str] = None,
         origin_platform: Optional[str] = None,
+        detail: Optional[str] = None,
+        waiting_on: Optional[str] = None,
     ) -> dict[str, Any]:
         """Insert a pin, or upsert the row that shares ``dedupe_key``.
 
@@ -154,8 +161,8 @@ class Store:
             self.conn.execute(
                 "INSERT INTO pins (id, title, link, unblocks, check_kind, check_arg, source, "
                 "dedupe_key, status, created_at, kind, question, choices, placeholder, reply_to, "
-                "origin_kind, origin_profile, origin_session_id, origin_platform) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "origin_kind, origin_profile, origin_session_id, origin_platform, detail, waiting_on) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(dedupe_key) DO UPDATE SET "
                 "title=excluded.title, link=excluded.link, unblocks=excluded.unblocks, "
                 "check_kind=excluded.check_kind, check_arg=excluded.check_arg, source=excluded.source, "
@@ -163,6 +170,7 @@ class Store:
                 "placeholder=excluded.placeholder, reply_to=excluded.reply_to, "
                 "origin_kind=excluded.origin_kind, origin_profile=excluded.origin_profile, "
                 "origin_session_id=excluded.origin_session_id, origin_platform=excluded.origin_platform, "
+                "detail=excluded.detail, waiting_on=excluded.waiting_on, "
                 "status='open', "
                 "done_at=CASE WHEN pins.status='open' THEN pins.done_at ELSE NULL END, "
                 "closed_at=CASE WHEN pins.status='open' THEN pins.closed_at ELSE NULL END, "
@@ -173,7 +181,7 @@ class Store:
                 "last_check_result=CASE WHEN pins.status='open' THEN pins.last_check_result ELSE NULL END",
                 (pin_id, title, link, unblocks, check_kind, check_arg, source, dedupe_key,
                  now, kind, question, choices_json, placeholder, reply_to,
-                 origin_kind, origin_profile, origin_session_id, origin_platform),
+                 origin_kind, origin_profile, origin_session_id, origin_platform, detail, waiting_on),
             )
             self.conn.commit()
             row = self.conn.execute(
@@ -184,11 +192,11 @@ class Store:
         self.conn.execute(
             "INSERT INTO pins (id, title, link, unblocks, check_kind, check_arg, source, "
             "dedupe_key, status, created_at, kind, question, choices, placeholder, reply_to, "
-            "origin_kind, origin_profile, origin_session_id, origin_platform) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "origin_kind, origin_profile, origin_session_id, origin_platform, detail, waiting_on) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (pin_id, title, link, unblocks, check_kind, check_arg, source, dedupe_key, OPEN, now,
              kind, question, choices_json, placeholder, reply_to,
-             origin_kind, origin_profile, origin_session_id, origin_platform),
+             origin_kind, origin_profile, origin_session_id, origin_platform, detail, waiting_on),
         )
         self.conn.commit()
         return self.get(pin_id)  # type: ignore[return-value]

@@ -99,6 +99,28 @@ side pane through `host.revealPane('corkboard:side')`; desktops without that API
 The side pane's dock is a one-shot adoption hint (`dock: { pane: 'workspace', pos: 'right' }`,
 no `enforce`), so dragging it elsewhere sticks across launches.
 
+### The pin list
+
+Open pins are an inbox of one-line rows in three groups:
+
+- **Needs you** — `task` pins. Click the circle to mark one done.
+- **Decide** — `yes_no`, `choice` and `text` pins (a diamond). Open the row to answer.
+- **Waiting on others** — any pin with `waiting_on` set. Dimmed and listed last.
+
+Each row shows a short title, then one subline (the answer, who it waits on, the question, or
+what it unblocks), plus the first URL in `link` as a chip (`GitHub #123 ↗`). The age on the
+right is compact (`6h`, `2d`, `1w`) and turns amber after 5 days. Clicking a row opens the full
+`detail`, with `` `code` ``, URLs and `[[note]]` links rendered, then the origin and timestamps.
+A done or dismissed row stays in place for 5 seconds with **Undo**. **Dismiss** and **Reopen**
+are in the row's `⋯` menu. The filter tabs show counts.
+
+Pins written before `detail` existed often put a paragraph in `title`. Those rows show the
+first clause as the title and the whole paragraph as the detail.
+
+The pane's styles are one scoped stylesheet added on `register` and removed on dispose. A disk
+plugin's class names are not part of the app's Tailwind build, so the inbox does not depend on
+them. Colours come from the app's `--ui-*` tokens, so the pane follows light and dark themes.
+
 ## Origin and link back
 
 Every pin records where it came from: the chat it was pinned in (`session`), a Bot Mode bot
@@ -138,6 +160,7 @@ Changes apply live without a reload. Preferences are per machine (`ctx.storage`)
 hermes corkboard                         # list open pins, newest first (default)
 hermes corkboard list --status all --sort oldest
 hermes corkboard add "File the LLC" --link https://… --unblocks "EIN"
+hermes corkboard add "Track bug #123" --detail "Answer maintainer questions" --waiting-on "Upstream"
 hermes corkboard add "Nameservers"  --check-dns example.com=ns.cloudflare.com
 hermes corkboard add "Nightly job"  --check-command "systemctl is-active cron"
 hermes corkboard done <id>

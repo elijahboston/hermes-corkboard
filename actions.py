@@ -154,6 +154,8 @@ def pin(
     origin_profile: Optional[str] = None,
     origin_session_id: Optional[str] = None,
     origin_platform: Optional[str] = None,
+    detail: Optional[str] = None,
+    waiting_on: Optional[str] = None,
     allow_command: bool = False,
 ) -> dict[str, Any]:
     """Validate and create/update a pin. Raises ``ValueError`` / ``guard.SecretRejected``."""
@@ -167,6 +169,12 @@ def pin(
         guard.assert_not_token(unblocks, field="unblocks")
     if question:
         guard.assert_not_token(question, field="question")
+    detail = (detail or "").strip() or None
+    if detail:
+        guard.assert_not_token(detail, field="detail")
+    waiting_on = (waiting_on or "").strip() or None
+    if waiting_on:
+        guard.assert_not_token(waiting_on, field="waiting_on")
 
     kind = (kind or "task").strip() or "task"
     if kind not in KINDS:
@@ -208,6 +216,8 @@ def pin(
         origin_profile=origin_profile,
         origin_session_id=origin_session_id,
         origin_platform=origin_platform,
+        detail=detail,
+        waiting_on=waiting_on,
     )
     notify_changed(row["id"], row["status"])
     return row
@@ -374,6 +384,10 @@ def format_pins(pins: list[dict[str, Any]]) -> str:
             lines.append(f"    link: {p['link']}")
         if p.get("unblocks"):
             lines.append(f"    unblocks: {p['unblocks']}")
+        if p.get("waiting_on"):
+            lines.append(f"    waiting on: {p['waiting_on']}")
+        if p.get("detail"):
+            lines.append(f"    detail: {p['detail']}")
         if p.get("check_kind"):
             lines.append(f"    check: {p['check_kind']} {p.get('check_arg') or ''}".rstrip())
         if p.get("answer"):
