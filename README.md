@@ -10,15 +10,15 @@ shares the same backend as the web dashboard.
 
 Requires Hermes 0.21.6 or newer.
 
-![The Corkboard side pane beside the main workspace](docs/screenshots/00-app.png)
-
-| Yes / no | Choice (recommendation starred) | Kanban card |
-|---|---|---|
-| ![Yes/no pin](docs/screenshots/01-yes-no.png) | ![Choice pin](docs/screenshots/02-choice.png) | ![Blocked kanban card pin](docs/screenshots/03-kanban.png) |
-
-| Self-clearing check | Dismissed, with Reopen |
+| Inbox, with a choice open | Light theme |
 |---|---|
-| ![DNS check pin](docs/screenshots/04-check.png) | ![Dismissed tab](docs/screenshots/05-dismissed.png) |
+| ![The side pane: open pins grouped into Needs you, Decide and Waiting on others, with a choice pin open showing its answer buttons](docs/screenshots/pane-inbox-dark.png) | ![The same inbox in the light theme](docs/screenshots/pane-inbox-light.png) |
+
+| A row opened to its detail | Done, with Undo |
+|---|---|
+| ![A task pin opened to show its detail, link, origin and age](docs/screenshots/pane-detail-dark.png) | ![A pin just marked done, struck through with an Undo link](docs/screenshots/pane-done-undo-dark.png) |
+
+Screenshots are renders of the real `desktop/plugin.js` side pane with sample pins.
 
 ## What it does on your machine
 
