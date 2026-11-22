@@ -233,7 +233,7 @@ node --check desktop/plugin.js
 Tests run against a temp SQLite connection (stub `ctx`); they never touch `~/.hermes` or a real
 board.
 
-Refresh the screenshots and the social card after a pane change (renders the real
+Refresh the screenshots after a pane change (renders the real
 `desktop/plugin.js` with sample pins from `scripts/screenshots/index.html`):
 
 ```bash

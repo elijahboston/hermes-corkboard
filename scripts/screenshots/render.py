@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["playwright>=1.45"]
 # ///
-"""Render the README screenshots and the social card from the real desktop/plugin.js.
+"""Render the README screenshots from the real desktop/plugin.js.
 
     uv run scripts/screenshots/render.py            # all images
     uv run scripts/screenshots/render.py --only pane-inbox-dark
@@ -24,7 +24,6 @@ from playwright.sync_api import Page, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 SHOTS = ROOT / "docs" / "screenshots"
-SOCIAL = ROOT / "docs" / "social"
 WIDTH = 352  # 320px pane + 16px padding each side
 
 
@@ -89,24 +88,11 @@ def done_undo_dark(page, base):
     snap(page, SHOTS / "pane-done-undo-dark.png", 470)
 
 
-def social(page, base):
-    # Uses docs/screenshots/pane-inbox-dark.png, so render that first.
-    page.set_viewport_size({"width": 1080, "height": 1350})
-    page.goto(f"{base}/scripts/screenshots/tweet.html")
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(800)
-    SOCIAL.mkdir(parents=True, exist_ok=True)
-    out = SOCIAL / "tweet-corkboard-0.2.0.png"
-    page.screenshot(path=str(out), clip={"x": 0, "y": 0, "width": 1080, "height": 1350})
-    print(out.relative_to(ROOT))
-
-
 JOBS = {
     "pane-inbox-dark": inbox_dark,
     "pane-inbox-light": inbox_light,
     "pane-detail-dark": detail_dark,
     "pane-done-undo-dark": done_undo_dark,
-    "social": social,
 }
 
 
@@ -121,8 +107,7 @@ def main() -> None:
         with sync_playwright() as pw:
             browser = pw.chromium.launch()
             for name in names:
-                # Pane shots at 2x for sharpness; the social card is exactly 1080x1350.
-                page = browser.new_page(device_scale_factor=1 if name == "social" else 2)
+                page = browser.new_page(device_scale_factor=2)  # 2x for sharpness
                 JOBS[name](page, f"http://127.0.0.1:{port}")
                 page.close()
             browser.close()
