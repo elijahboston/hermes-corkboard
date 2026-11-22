@@ -1,0 +1,82 @@
+<!doctype html>
+<html class="dark">
+<script>if(new URLSearchParams(location.search).get("theme")==="light")document.documentElement.classList.remove("dark")</script>
+<head>
+<meta charset="utf-8">
+<script type="importmap">
+{ "imports": {
+  "react": "https://esm.sh/react@19.1.0",
+  "react/jsx-runtime": "https://esm.sh/react@19.1.0/jsx-runtime",
+  "react-dom/client": "https://esm.sh/react-dom@19.1.0/client?deps=react@19.1.0",
+  "@hermes/plugin-sdk": "./sdk.js"
+} }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style>
+  /* Approximation of the app's --ui-* tokens (apps/desktop/src/styles.css). */
+  :root { --ui-base:#141414; --ui-accent:#2563eb; --ui-red:#cf2d56; --ui-orange:#db704b; --ui-yellow:#c08532;
+    --ui-green:#1f8a65; --ui-blue:#0053fd; --ui-purple:#9e94d5; --bg:#fafafa; --ui-bg-elevated:#fff;
+    --ui-inline-code-background:color-mix(in srgb,#141414 5%,transparent); --ui-inline-code-foreground:color-mix(in srgb,#141414 88%,transparent); }
+  :root.dark { --ui-base:#e8e8e8; --ui-red:#e75e78; --ui-green:#55a583; --bg:#17181b; --ui-bg-elevated:#232428;
+    --ui-inline-code-background:color-mix(in srgb,#fff 7%,transparent); --ui-inline-code-foreground:color-mix(in srgb,#fff 88%,transparent); }
+  :root { --ui-text-primary:color-mix(in srgb,var(--ui-base) 94%,transparent); --ui-text-secondary:color-mix(in srgb,var(--ui-base) 74%,transparent);
+    --ui-text-tertiary:color-mix(in srgb,var(--ui-base) 54%,transparent); --ui-row-hover-background:color-mix(in srgb,var(--ui-base) 6%,transparent);
+    --ui-control-hover-background:color-mix(in srgb,var(--ui-base) 8%,transparent); --ui-control-active-background:color-mix(in srgb,var(--ui-base) 10%,transparent);
+    --ui-stroke-secondary:color-mix(in srgb,var(--ui-base) 22%,transparent); }
+  body { margin:0; background:#0b0b0d; font:13px -apple-system,BlinkMacSystemFont,sans-serif; -webkit-font-smoothing:antialiased; padding:16px; }
+  :root:not(.dark) body { background:#dfe1e5 }
+  #pane { width:320px; height:var(--h,600px); background:var(--bg); color:var(--ui-text-primary); border-radius:8px; overflow:hidden; display:flex; flex-direction:column; }
+  .tab { font-size:11.5px; letter-spacing:.03em; padding:9px 12px 8px; border-bottom:1px solid var(--ui-stroke-secondary); color:var(--ui-text-primary) }
+  #root { flex:1; min-height:0 }
+</style>
+</head>
+<body>
+<div id="pane"><div class="tab" id="tab">CORKBOARD (7)</div><div id="root"></div></div>
+<script type="module">
+import { createElement } from 'react'
+import { createRoot } from 'react-dom/client'
+import plugin from '../../desktop/plugin.js'
+
+const D = 86400, now = Date.now() / 1000
+let pins = [
+  { id: 'p1', status: 'open', kind: 'task', origin_kind: 'session', origin_profile: 'default', created_at: now - 5 * 3600, title: 'Renew the example.com domain', detail: 'Expires Dec 1. Renew at the registrar, then run `hermes corkboard check`.',
+    unblocks: 'Company site', link: 'https://dash.cloudflare.com' },
+  { id: 'p2', status: 'open', kind: 'task', origin_kind: 'kanban', source: 'kanban:default/t_41', created_at: now - 1 * D, title: 'Log in to Stripe and finish the tax form',
+    unblocks: 'Payouts to the business account' },
+  { id: 'p3', status: 'open', kind: 'task', origin_kind: 'bot', origin_profile: 'default', created_at: now - 6 * D, title: 'Log in to Fly on the build box', detail: 'Run `fly auth login` there; the deploy job needs it.',
+    unblocks: 'Nightly preview deploys' },
+  { id: 'p4', status: 'open', kind: 'choice', origin_kind: 'kanban', source: 'kanban:default/t_52', created_at: now - 2 * 3600, title: 'Pick a name for the CLI',
+    question: 'Which name?', choices: ['shipit', 'launchpad', 'relay'], recommended: 'shipit' },
+  { id: 'p5', status: 'open', kind: 'yes_no', origin_kind: 'session', origin_profile: 'default', created_at: now - 2 * D, title: 'Ship v1.4 to production?',
+    question: 'CI is green on main. Ship it?', unblocks: 'The release tag', link: 'https://github.com/acme/app/pull/412' },
+  { id: 'p6', status: 'open', kind: 'task', origin_kind: 'cli', created_at: now - 3 * D, title: 'Apple review of the TestFlight build', waiting_on: 'App Store review', detail: 'Submitted build 214 on Friday.' },
+  { id: 'p7', status: 'open', kind: 'task', origin_kind: 'cli', created_at: now - 8 * D, title: 'Upstream fix for the SDK timeout bug', waiting_on: 'SDK maintainers', link: 'https://github.com/acme/sdk/issues/88' },
+  ...Array.from({ length: 9 }, (_, i) => ({ id: 'd' + i, status: 'done', kind: 'task', origin_kind: 'cli', created_at: now - (10 + i) * D, closed_at: now - i * D, title: 'Old done pin ' + i })),
+]
+window.__calls = []
+const ctx = {
+  rest: async (path, opts) => {
+    window.__calls.push(path)
+    const m = /^\/pins\/([^/]+)\/(\w+)$/.exec(path)
+    if (m) {
+      if (window.__failNext) { window.__failNext = false; throw new Error('500: {"detail":"board is locked"}') }
+      const p = pins.find((x) => x.id === m[1]); const verb = m[2]
+      p.status = verb === 'done' ? 'done' : verb === 'dismissed' || verb === 'dismiss' ? 'dismissed' : verb === 'reopen' ? 'open' : verb === 'answer' ? 'done' : p.status
+      if (verb === 'answer') p.answer = opts.body.answer
+      p.closed_at = p.status === 'open' ? null : Date.now() / 1000
+      return p
+    }
+    return pins.map((p) => ({ ...p }))
+  },
+  onEvent: () => () => {}, addEventListener: (t, ev, fn) => { t.addEventListener(ev, fn); return () => t.removeEventListener(ev, fn) },
+  os: { openExternal: (u) => { window.__opened = u } }, storage: { get: (k, f) => f, set: () => {} },
+  runAction: () => ({ ok: true }), onDispose: () => {}, register: () => {}, registerSettingsPage: () => {},
+  registerMany(items) { window.__items = items },
+}
+plugin.register(ctx)
+const side = window.__items.find((i) => i.id === 'side')
+createRoot(document.getElementById('root')).render(createElement(() => side.render()))
+window.__ready = true
+</script>
+</body>
+</html>
